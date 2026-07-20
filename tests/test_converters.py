@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from notion_cli import (  # noqa: E402
+    block_to_spec,
     coerce_segments,
     dash,
     flatten_value,
@@ -241,6 +242,34 @@ def test_coerce_empty_clears():
 
 def test_coerce_title_keeps_inline_markdown():
     assert coerce_segments("a **b**", "title") == [["a "], ["b", [["b"]]]]
+
+
+# ---- template block cloning ---------------------------------------------------------
+
+
+def test_block_to_spec_copies_type_and_props():
+    blocks = {"a": {"id": "a", "type": "sub_header", "properties": {"title": [["Why"]]}, "content": []}}
+    assert block_to_spec("a", blocks) == {"type": "sub_header", "properties": {"title": [["Why"]]}}
+
+
+def test_block_to_spec_strips_provenance():
+    blocks = {"a": {"id": "a", "type": "callout", "properties": {},
+                    "format": {"page_icon": "🎙️", "copied_from_pointer": {"id": "x", "table": "block"}}, "content": []}}
+    assert block_to_spec("a", blocks)["format"] == {"page_icon": "🎙️"}
+
+
+def test_block_to_spec_recurses_children():
+    blocks = {
+        "p": {"id": "p", "type": "callout", "properties": {}, "content": ["c"]},
+        "c": {"id": "c", "type": "text", "properties": {"title": [["hi"]]}, "content": []},
+    }
+    spec = block_to_spec("p", blocks)
+    assert spec["children"][0] == {"type": "text", "properties": {"title": [["hi"]]}}
+
+
+def test_block_to_spec_skips_dead_blocks():
+    blocks = {"a": {"id": "a", "type": "text", "properties": {}, "alive": False, "content": []}}
+    assert block_to_spec("a", blocks) is None
 
 
 # ---- client-side filter DSL ---------------------------------------------------------

@@ -108,6 +108,8 @@ notion users [query]
 # Write
 notion create --parent <db> --prop 'Title=New row' --prop 'Status=Triage' \
   --prop 'Owner=user://<uuid>' --icon 🚀 --md body.md
+notion templates <db>                      # list templates
+notion create --parent <db> --prop 'Title=…' --template 'AI new item'   # clone one
 notion update <page> --prop 'Status=Done' --prop 'Due='   # empty value clears
 notion append <page> --md notes.md         # markdown incl. callouts, todos, @user()/@page() mentions
 notion edit <page> "old text" "new text"   # in-place replace, formatting preserved
