@@ -109,6 +109,13 @@ notion_cli.py create --parent <db_or_ds> \
   --prop 'Owner=user://<user-uuid>…' --prop 'Parent item=https://notion.so/<id>' \
   --prop 'Due=2026-07-31' --icon 💸 --md body.md
 
+# List a database's templates, then clone one at create time
+notion_cli.py templates <db_or_ds>
+notion_cli.py create --parent <db_or_ds> --prop 'Title=…' --template 'AI new item'
+# --template clones the template's body SYNCHRONOUSLY into the create
+# transaction (no async placeholder race). Fill the cloned placeholders after
+# with `edit`/`append`; --md/--body appends beneath the cloned body.
+
 # Update properties (empty value clears; date ranges as start..end)
 notion_cli.py update <page> --prop 'Status=Done' --prop 'Due='
 notion_cli.py update <page> --archive
@@ -149,8 +156,11 @@ notion_cli.py delete-block <block_id>
 - `query` needs a view on the database (any view); `schema` prints the
   collection + view ids it resolved.
 - Deleted pages still resolve (trash): `page` marks them `deleted: true`.
-- `create` in a database does NOT instantiate Notion templates, and
-  auto-increment IDs are assigned lazily by the server.
+- `create --template` clones a template's body by deep-copying its blocks in
+  the same transaction (templates are just pages with `is_template: true`);
+  it does NOT call the API's async template instantiation, so there is no
+  placeholder-stacking race. Auto-increment IDs are still assigned lazily by
+  the server.
 - Formula/rollup values are computed server-side and not stored on the row
   record — they flatten to None.
 - `page --depth` default is 6; deeper nesting truncates with an explicit

@@ -603,6 +603,74 @@ def resolve_collection(api: Api, ref: str) -> tuple[dict, str | None]:
     return coll, (views[0] if views else None)
 
 
+def block_to_spec(bid: str, blocks: dict, fetch=None) -> dict | None:
+    """Deep-copy an existing block subtree into a create-spec
+    (type/properties/format/children) that `blocks_to_ops` can rebuild with
+    fresh ids. Strips `copied_from_pointer` provenance so the clone is a plain
+    authored tree, not a linked copy. `fetch(id)->record` resolves children the
+    caller's `blocks` map doesn't already carry."""
+    b = blocks.get(bid)
+    if b is None and fetch is not None:
+        b = fetch(bid)
+        if b:
+            blocks[bid] = b
+    if not b or not b.get("alive", True):
+        return None
+    spec: dict = {"type": b["type"], "properties": b.get("properties", {})}
+    fmt = {k: v for k, v in (b.get("format") or {}).items() if k != "copied_from_pointer"}
+    if fmt:
+        spec["format"] = fmt
+    kids = [block_to_spec(cid, blocks, fetch) for cid in b.get("content", [])]
+    kids = [k for k in kids if k]
+    if kids:
+        spec["children"] = kids
+    return spec
+
+
+def list_templates(api: Api, coll: dict) -> list[tuple[str, str]]:
+    """(template_page_id, title) for every template on the collection."""
+    ids = coll.get("template_pages") or []
+    recs = api.records("block", ids)
+    return [(tid, seg_plain(recs.get(tid, {}).get("properties", {}).get("title")) or tid) for tid in ids]
+
+
+def resolve_template(api: Api, coll: dict, ref: str) -> tuple[str, str]:
+    """Resolve a template ref (page id or case-insensitive title substring) to
+    (id, title). Raises with the available list when nothing matches."""
+    tpls = list_templates(api, coll)
+    if not tpls:
+        raise click.ClickException("this database has no templates")
+    try:
+        want = parse_id(ref)
+    except click.ClickException:
+        want = None
+    for tid, title in tpls:
+        if want and tid == want:
+            return tid, title
+    hits = [(tid, title) for tid, title in tpls if ref.lower() in title.lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise click.ClickException(f"ambiguous template {ref!r}: " + ", ".join(t for _, t in hits))
+    raise click.ClickException(f"no template matching {ref!r}; available: " + ", ".join(t for _, t in tpls))
+
+
+def clone_template_ops(api: Api, coll: dict, ref: str, new_id: str) -> tuple[list[dict], str]:
+    """Ops that recreate a template's body under new_id, in one transaction."""
+    tid, title = resolve_template(api, coll, ref)
+    tables = api.load_page(tid)
+    tblocks = tables.get("block", {})
+    root = tblocks.get(tid) or api.records("block", [tid]).get(tid, {})
+
+    def fetch(x):
+        return api.records("block", [x]).get(x)
+
+    specs = [block_to_spec(cid, tblocks, fetch) for cid in root.get("content", [])]
+    specs = [s for s in specs if s]
+    ops, _ = blocks_to_ops(api, specs, new_id)
+    return ops, title
+
+
 def schema_by_name(coll: dict) -> dict[str, tuple[str, str]]:
     """name -> (prop_id, type); includes the implicit title property."""
     out = {"Title": ("title", "title")}
@@ -1208,11 +1276,17 @@ def _parse_prop_args(props: tuple[str, ...]) -> dict[str, str]:
 @cli.command()
 @click.option("--parent", "parent_ref", required=True, help="database (collection) or page to create under")
 @click.option("--prop", "props", multiple=True, help="Name=Value (schema-aware; repeatable; empty clears)")
-@click.option("--md", "md_file", help="markdown body file ('-' = stdin)")
-@click.option("--body", help="markdown body inline")
+@click.option("--template", "template", help="clone this database template's body (id or title substring)")
+@click.option("--md", "md_file", help="markdown body file ('-' = stdin; appended after --template)")
+@click.option("--body", help="markdown body inline (appended after --template)")
 @click.option("--icon", help="emoji icon")
-def create(parent_ref, props, md_file, body, icon):
-    """Create a row in a database (schema-coerced props) or a child page."""
+def create(parent_ref, props, template, md_file, body, icon):
+    """Create a row in a database (schema-coerced props) or a child page.
+
+    --template clones a database template's body synchronously into the same
+    create transaction (no async placeholder race, unlike the API's template
+    instantiation); --md/--body then appends beneath the cloned body.
+    """
     api = api_or_die()
     kv = _parse_prop_args(props)
     new_id = str(uuidlib.uuid4())
@@ -1221,6 +1295,7 @@ def create(parent_ref, props, md_file, body, icon):
         "version": 1, "created_time": now_ms(), "last_edited_time": now_ms(), "properties": {},
     }
     ops: list[dict] = []
+    coll = None
     try:
         coll, _ = resolve_collection(api, parent_ref)
         sch = schema_by_name(coll)
@@ -1233,6 +1308,8 @@ def create(parent_ref, props, md_file, body, icon):
     except click.ClickException as e:
         if "unknown property" in str(e):
             raise
+        if template:
+            raise click.ClickException("--template only applies when creating in a database")
         log.info("parent is not a database (%s); creating a child page", e)
         ppid = parse_id(parent_ref)
         record["parent_id"], record["parent_table"] = ppid, "block"
@@ -1241,12 +1318,30 @@ def create(parent_ref, props, md_file, body, icon):
     if icon:
         record["format"] = {"page_icon": icon}
     ops.insert(0, op("block", new_id, [], "set", record, api.space_id))
+    tpl_title = None
+    if template:
+        tpl_ops, tpl_title = clone_template_ops(api, coll, template, new_id)
+        ops += tpl_ops
     md = _read_md(md_file, body) if (md_file or body) else None
     if md:
         child_ops, _ = blocks_to_ops(api, md_to_v3_blocks(md), new_id)
         ops += child_ops
     api.transact(ops)
-    click.echo(f"created {page_url(new_id)}")
+    click.echo(f"created {page_url(new_id)}" + (f" (from template {tpl_title!r})" if tpl_title else ""))
+
+
+@cli.command(name="templates")
+@click.argument("ref")
+def templates_cmd(ref):
+    """List a database's templates (id + title) for use with `create --template`."""
+    api = api_or_die()
+    coll, _ = resolve_collection(api, ref)
+    tpls = list_templates(api, coll)
+    if not tpls:
+        click.echo("no templates on this database")
+        return
+    for tid, title in tpls:
+        click.echo(f"{title}\t{page_url(tid)}")
 
 
 @cli.command()
