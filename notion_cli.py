@@ -1116,19 +1116,44 @@ def schema_cmd(ref):
         click.echo(f"  {name}: {ptype}")
 
 
+def _epoch_ms(iso: str) -> int:
+    """Parse a YYYY-MM-DD[ HH:MM[:SS]] (UTC) date to epoch ms."""
+    import datetime
+
+    s = iso.strip().replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            dt = datetime.datetime.strptime(s, fmt).replace(tzinfo=datetime.timezone.utc)
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            continue
+    raise click.ClickException(f"bad date {iso!r} — use YYYY-MM-DD or YYYY-MM-DD HH:MM")
+
+
 @cli.command()
 @click.argument("text")
 @click.option("--limit", type=int, default=10, show_default=True)
-def search(text, limit):
-    """Workspace search (same index as the app's quick-find)."""
+@click.option("--created-after", help="only pages created at/after this UTC date (client-side)")
+@click.option("--edited-after", help="only pages last-edited at/after this UTC date (client-side)")
+@click.option("--json", "as_json", is_flag=True)
+def search(text, limit, created_after, edited_after, as_json):
+    """Workspace search (same index as the app's quick-find).
+
+    --created-after / --edited-after filter client-side on each hit's
+    timestamp (the private search API ignores server-side time filters), so
+    the fetch is widened automatically when a date bound is set.
+    """
     api = api_or_die()
+    cut_c = _epoch_ms(created_after) if created_after else None
+    cut_e = _epoch_ms(edited_after) if edited_after else None
+    fetch = max(limit, 100) if (cut_c or cut_e) else limit
     d = api.post(
         "search",
         {
             "type": "BlocksInSpace",
             "query": text,
             "spaceId": api.space_id,
-            "limit": limit,
+            "limit": fetch,
             "filters": {
                 "isDeletedOnly": False, "excludeTemplates": True, "navigableBlockContentOnly": True,
                 "requireEditPermissions": False, "includePublicPagesWithoutExplicitAccess": False,
@@ -1138,12 +1163,31 @@ def search(text, limit):
             "source": "quick_find_input_change",
         },
     )
+    import datetime
+
     rm = {rid: unwrap(w) for rid, w in d.get("recordMap", {}).get("block", {}).items()}
+    out = []
+    kept = 0
     for r in d.get("results", []):
+        if kept >= limit:
+            break
         rid = r.get("id")
         blk = rm.get(rid, {})
+        ct, et = blk.get("created_time", 0), blk.get("last_edited_time", 0)
+        if cut_c and ct < cut_c:
+            continue
+        if cut_e and et < cut_e:
+            continue
+        kept += 1
         title = seg_plain(blk.get("properties", {}).get("title")) or "?"
-        click.echo(f"{title}\t{page_url(rid)}")
+        if as_json:
+            out.append({"id": rid, "url": page_url(rid), "title": title,
+                        "created": datetime.datetime.fromtimestamp(ct / 1000, datetime.timezone.utc).isoformat() if ct else None,
+                        "edited": datetime.datetime.fromtimestamp(et / 1000, datetime.timezone.utc).isoformat() if et else None})
+        else:
+            click.echo(f"{title}\t{page_url(rid)}")
+    if as_json:
+        click.echo(json.dumps(out, ensure_ascii=False, indent=1))
 
 
 @cli.command()
