@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from notion_cli import (  # noqa: E402
+    _epoch_ms,
     block_to_spec,
     coerce_segments,
     dash,
@@ -242,6 +243,22 @@ def test_coerce_empty_clears():
 
 def test_coerce_title_keeps_inline_markdown():
     assert coerce_segments("a **b**", "title") == [["a "], ["b", [["b"]]]]
+
+
+# ---- date parsing -------------------------------------------------------------------
+
+
+def test_epoch_ms_date_only():
+    assert _epoch_ms("2026-07-16") == 1784160000000
+
+
+def test_epoch_ms_datetime():
+    assert _epoch_ms("2026-07-16 12:00") == 1784203200000
+
+
+def test_epoch_ms_rejects_garbage():
+    with pytest.raises(Exception):
+        _epoch_ms("last tuesday")
 
 
 # ---- template block cloning ---------------------------------------------------------
