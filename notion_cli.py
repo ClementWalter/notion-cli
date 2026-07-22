@@ -45,6 +45,7 @@ log = logging.getLogger("notion-cli")
 API_BASE = "https://www.notion.so/api/v3"
 CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
 LEGACY_TOKEN_PATH = Path.home() / ".config" / "notion-reader" / "config.json"
+ID_NAMES_PATH = Path.home() / ".config" / "notion-cli" / "cache" / "id_names.json"
 
 
 # --------------------------------------------------------------------------
@@ -63,6 +64,59 @@ def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
     # The file holds the session token — keep it out of reach of other users.
     CONFIG_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+# --------------------------------------------------------------------------
+# id → name/title cache
+#
+# Notion ids are immutable and never reused, so — mirroring slack-user-cli's
+# permanent id_names.json store — this is a no-TTL cache: once an id has been
+# resolved to a name/title (by any command, as a side effect), it's reused
+# forever with no further API call. Kept separate from CONFIG_PATH (which
+# holds the auth token) since this file is safe to share/inspect/delete.
+# --------------------------------------------------------------------------
+
+
+def load_id_cache() -> dict[str, dict[str, str]]:
+    if not ID_NAMES_PATH.is_file():
+        return {"users": {}, "pages": {}}
+    try:
+        data = json.loads(ID_NAMES_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"users": {}, "pages": {}}
+    data.setdefault("users", {})
+    data.setdefault("pages", {})
+    return data
+
+
+def save_id_cache(data: dict[str, dict[str, str]]) -> None:
+    ID_NAMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ID_NAMES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    tmp.replace(ID_NAMES_PATH)
+
+
+def merge_id_cache(cache: dict[str, dict[str, str]], kind: str, mapping: dict[str, str]) -> bool:
+    """Merge newly-learned id→name/title pairs into `cache` in place.
+    Returns True if anything new was added (so callers only write to disk
+    when there's actually something to persist)."""
+    changed = False
+    bucket = cache[kind]
+    for rid, name in mapping.items():
+        if name and bucket.get(rid) != name:
+            bucket[rid] = name
+            changed = True
+    return changed
+
+
+def cache_names(kind: str, mapping: dict[str, str]) -> None:
+    """Load-merge-save in one call, for callers that just learned some
+    id→name/title pairs as a side effect of an unrelated fetch."""
+    if not mapping:
+        return
+    cache = load_id_cache()
+    if merge_id_cache(cache, kind, mapping):
+        save_id_cache(cache)
 
 
 class Api:
@@ -325,12 +379,23 @@ def render_page_body(api: Api, page_id: str, max_depth: int) -> str:
     tables = api.load_page(page_id)
     blocks = tables.get("block", {})
     names = _name_map(tables)
+    cache_names("users", {uid: u.get("name") or "" for uid, u in tables.get("notion_user", {}).items()})
+    # Only cache blocks that are actual pages — _name_map itself covers every
+    # block (mentions can target any block id), but a paragraph/heading/bullet
+    # block's title text is not a page title and would pollute the cache.
+    cache_names("pages", {
+        bid: seg_plain(b.get("properties", {}).get("title"))
+        for bid, b in blocks.items()
+        if b.get("type") in ("page", "collection_view_page")
+    })
     # user mentions reference users the page chunk doesn't carry — resolve them
     uids = {m[1] for b in blocks.values() for segs in (b.get("properties") or {}).values()
             if isinstance(segs, list) for seg in segs
             if seg and seg[0] == "‣" for m in seg[1] if m[0] == "u"} - set(names)
     if uids:
-        names.update({uid: (u.get("name") or uid) for uid, u in api.records("notion_user", list(uids)).items()})
+        resolved = {uid: (u.get("name") or uid) for uid, u in api.records("notion_user", list(uids)).items()}
+        names.update(resolved)
+        cache_names("users", resolved)
     root = blocks.get(page_id, {})
     lines = _render_children(api, root.get("content", []), blocks, names, 0, max_depth)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
@@ -1012,6 +1077,9 @@ def page(ref, props_only, no_props, depth, as_json, raw):
         flat.update({k: v for k, v in flatten_row(blk, sch, names).items() if k not in ("id", "url")})
     else:
         flat["Title"] = seg_plain(blk.get("properties", {}).get("title"))
+    title = seg_plain(blk.get("properties", {}).get("title"))
+    if title:
+        cache_names("pages", {pid: title})
     body = None if props_only else render_page_body(api, pid, depth)
     if as_json:
         if body is not None:
@@ -1063,7 +1131,9 @@ def query(ref, select_, filters, sort_, limit, names, as_json):
         uids = {m[1] for r in rm.values() for segs in r.get("properties", {}).values() if isinstance(segs, list)
                 for seg in segs if seg and seg[0] == "‣" for m in seg[1] if m[0] == "u"}
         name_map = {uid: (u.get("name") or uid) for uid, u in api.records("notion_user", list(uids)).items()}
+        cache_names("users", name_map)
     rows = [flatten_row(rm[i], sch, name_map) for i in ids if i in rm and rm[i].get("alive", True)]
+    cache_names("pages", {r["id"]: seg_plain(rm[r["id"]].get("properties", {}).get("title")) for r in rows if r.get("id") in rm})
     # relation cells flatten to bare page urls; when the target is another row
     # of this same query, label it "#<ID> <Title>" so hierarchy is readable
     if not as_json:
@@ -1248,10 +1318,55 @@ def users(query_):
     spaces = api.records("space", [cfg["space_id"]])
     perms = spaces.get(cfg["space_id"], {}).get("permissions", [])
     uids = [p.get("user_id") for p in perms if p.get("user_id")]
-    for uid, u in api.records("notion_user", uids).items():
+    fetched = api.records("notion_user", uids)
+    cache_names("users", {uid: u.get("name", "") for uid, u in fetched.items()})
+    for uid, u in fetched.items():
         label = f"{u.get('name', '?')}\t{u.get('email', '')}\t{uid}"
         if not query_ or query_.lower() in label.lower():
             click.echo(label)
+
+
+@cli.command()
+@click.argument("ids", nargs=-1, required=True)
+@click.option("--json", "as_json", is_flag=True)
+def resolve(ids, as_json):
+    """Resolve one or more ids to a display name/title — user or page —
+    using the local id_names cache first. Only ids not already cached (by
+    any prior command — `page`, `query`, `users`, or a previous `resolve`)
+    cost an API call, one batched `notion_user` lookup plus one batched
+    `block` lookup for whatever's left, never a full listing. The right way
+    to name an id instead of guessing it from context."""
+    cache = load_id_cache()
+    parsed = [parse_id(rid) for rid in ids]
+    out: dict[str, str] = {}
+    missing = []
+    for pid in parsed:
+        if pid in cache["users"]:
+            out[pid] = cache["users"][pid]
+        elif pid in cache["pages"]:
+            out[pid] = cache["pages"][pid]
+        else:
+            missing.append(pid)
+    if missing:
+        api = api_or_die()
+        found_users = api.records("notion_user", missing)
+        user_names = {uid: (u.get("name") or uid) for uid, u in found_users.items()}
+        out.update(user_names)
+        merge_id_cache(cache, "users", user_names)
+        still_missing = [pid for pid in missing if pid not in found_users]
+        if still_missing:
+            found_blocks = api.records("block", still_missing)
+            page_titles = {bid: (seg_plain(b.get("properties", {}).get("title")) or bid) for bid, b in found_blocks.items()}
+            out.update(page_titles)
+            merge_id_cache(cache, "pages", page_titles)
+            for bid in still_missing:
+                out.setdefault(bid, bid)  # unresolved — keep the raw id, don't guess
+        save_id_cache(cache)
+    if as_json:
+        click.echo(json.dumps(out, ensure_ascii=False))
+        return
+    for pid in parsed:
+        click.echo(f"{pid}\t{out.get(pid, pid)}")
 
 
 @cli.command()

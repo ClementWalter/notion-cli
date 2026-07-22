@@ -12,16 +12,20 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+import notion_cli  # noqa: E402
 from notion_cli import (  # noqa: E402
     _epoch_ms,
     block_to_spec,
     coerce_segments,
     dash,
     flatten_value,
+    load_id_cache,
     make_matcher,
     md_to_segments,
     md_to_v3_blocks,
+    merge_id_cache,
     parse_id,
+    save_id_cache,
     seg_plain,
     seg_to_md,
 )
@@ -330,3 +334,52 @@ def test_match_is_not_empty():
 def test_match_unknown_property_raises():
     with pytest.raises(Exception, match="unknown property"):
         make_matcher("Nope=1", KNOWN)
+
+
+# ---- id → name/title cache -------------------------------------------------
+
+
+def test_merge_id_cache_adds_new_entry():
+    cache = {"users": {}, "pages": {}}
+    changed = merge_id_cache(cache, "users", {USER: "Ada"})
+    assert cache["users"] == {USER: "Ada"}
+
+
+def test_merge_id_cache_reports_change_on_new_entry():
+    cache = {"users": {}, "pages": {}}
+    assert merge_id_cache(cache, "users", {USER: "Ada"}) is True
+
+
+def test_merge_id_cache_reports_no_change_when_identical():
+    cache = {"users": {USER: "Ada"}, "pages": {}}
+    assert merge_id_cache(cache, "users", {USER: "Ada"}) is False
+
+
+def test_merge_id_cache_updates_changed_name():
+    cache = {"users": {USER: "Ada"}, "pages": {}}
+    merge_id_cache(cache, "users", {USER: "Ada Lovelace"})
+    assert cache["users"][USER] == "Ada Lovelace"
+
+
+def test_merge_id_cache_skips_empty_names():
+    cache = {"users": {}, "pages": {}}
+    changed = merge_id_cache(cache, "users", {USER: ""})
+    assert cache["users"] == {} and changed is False
+
+
+def test_load_id_cache_defaults_to_empty_shape_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(notion_cli, "ID_NAMES_PATH", tmp_path / "missing" / "id_names.json")
+    assert load_id_cache() == {"users": {}, "pages": {}}
+
+
+def test_save_and_load_id_cache_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(notion_cli, "ID_NAMES_PATH", tmp_path / "id_names.json")
+    save_id_cache({"users": {USER: "Ada"}, "pages": {UUID: "Vault Launch Plan"}})
+    assert load_id_cache() == {"users": {USER: "Ada"}, "pages": {UUID: "Vault Launch Plan"}}
+
+
+def test_load_id_cache_recovers_from_corrupt_file(tmp_path, monkeypatch):
+    path = tmp_path / "id_names.json"
+    path.write_text("not json")
+    monkeypatch.setattr(notion_cli, "ID_NAMES_PATH", path)
+    assert load_id_cache() == {"users": {}, "pages": {}}

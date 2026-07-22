@@ -104,6 +104,7 @@ notion schema <db>                         # property name → type
 notion search "quarterly launch plan"
 notion comments <page>                     # discussions INCL. resolved ones
 notion users [query]
+notion resolve <id> [<id> ...]              # id -> name/title, cached locally, no full listing
 
 # Write
 notion create --parent <db> --prop 'Title=New row' --prop 'Status=Triage' \
@@ -123,8 +124,17 @@ does what you mean. Relation cells pointing at rows of the same query render
 as `#<ID> <Title>` so parent/sub-item hierarchy stays visible in flat output.
 
 Every command supports `--json` for structured output; `--raw` dumps the
-untouched API records when you need to debug. For big pulls, redirect to a
-file and slice it instead of re-reading everything:
+untouched API records when you need to debug.
+
+`page`/`query`/`users` all persist every id→name/title pair they discover to
+a local cache (`~/.config/notion-cli/cache/id_names.json`, no TTL — Notion
+ids are immutable and never reused). `resolve <id>` reads that cache first,
+so naming an id you've already seen (a user, or a page) costs nothing — only
+a genuinely new id triggers one batched API call, never a full listing. This
+is what to reach for instead of re-running `users "<name>"` (a full
+workspace-member fetch every time) just to look up one id.
+
+For big pulls, redirect to a file and slice it instead of re-reading everything:
 
 ```bash
 notion query <db> --json > rows.json && jq -r '.[].Status' rows.json | sort | uniq -c
