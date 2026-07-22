@@ -98,8 +98,10 @@ unless you log out; on `401 — token_v2 expired`, just `login` again.
 # Read
 notion page <url-or-id>                    # properties + body as compact markdown
 notion page <url-or-id> --props-only       # cheapest possible read
+notion pages <id> <id> <id> ...             # multiple pages' bodies in ONE call, not one `page` call each
 notion query <db> --select ID,Status,Title --filter 'Status=In progress' --sort ID
 notion query <db> --filter 'Due<2026-08-01' --filter 'Status!=Done'   # ANDed
+notion query <db> --filter 'Status=Done' --with-body   # + every matched row's full page body, still one call
 notion schema <db>                         # property name → type
 notion search "quarterly launch plan"
 notion comments <page>                     # discussions INCL. resolved ones
@@ -133,6 +135,14 @@ so naming an id you've already seen (a user, or a page) costs nothing — only
 a genuinely new id triggers one batched API call, never a full listing. This
 is what to reach for instead of re-running `users "<name>"` (a full
 workspace-member fetch every time) just to look up one id.
+
+**Avoid one `page` call per row.** Fetching a database's rows and then each
+row's body separately is the single biggest source of avoidable round-trips
+in a typical read-heavy session (measured: 60 separate `page` calls in one
+run, one per tracker row). `query --with-body` fetches every matched row's
+full body in the *same* call as the query itself; `pages <id> <id> ...`
+batches bodies for any other already-known set of ids into one call instead
+of N.
 
 For big pulls, redirect to a file and slice it instead of re-reading everything:
 

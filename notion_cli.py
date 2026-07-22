@@ -1096,14 +1096,44 @@ def page(ref, props_only, no_props, depth, as_json, raw):
 
 
 @cli.command()
+@click.argument("ids", nargs=-1, required=True)
+@click.option("--depth", default=6, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def pages(ids, depth, as_json):
+    """Fetch multiple pages' bodies in one call — content only, no properties
+    (like `page --no-props`, batched). For any already-known set of ids (from
+    `search`, `resolve`, or elsewhere) that don't come from a single `query`
+    — use `query --with-body` instead when they do, it's one query call
+    total rather than a query plus N of these."""
+    api = api_or_die()
+    out = []
+    for ref in ids:
+        pid = parse_id(ref)
+        title = seg_plain(api.block(pid).get("properties", {}).get("title"))
+        if title:
+            cache_names("pages", {pid: title})
+        body = render_page_body(api, pid, depth)
+        if as_json:
+            out.append({"id": pid, "title": title, "body": body})
+        else:
+            click.echo(f"# [{pid}] {title or '(untitled)'}\n")
+            click.echo(body)
+            click.echo("\n---\n")
+    if as_json:
+        click.echo(json.dumps(out, ensure_ascii=False, indent=1))
+
+
+@cli.command()
 @click.argument("ref")
 @click.option("--select", "select_", help="comma-separated property names")
 @click.option("--filter", "filters", multiple=True, help="'Status=Done', 'ID>195', 'Title~vault', 'Due is_empty' (ANDed)")
 @click.option("--sort", "sort_", help="'Prop' or 'Prop:desc'")
 @click.option("--limit", type=int, default=None)
 @click.option("--names/--no-names", default=True, help="resolve people to display names")
+@click.option("--with-body", is_flag=True, help="also fetch and include each matched row's full page body (one call instead of one `page` call per row)")
+@click.option("--body-depth", default=6, show_default=True, help="nested-children recursion cap for --with-body")
 @click.option("--json", "as_json", is_flag=True)
-def query(ref, select_, filters, sort_, limit, names, as_json):
+def query(ref, select_, filters, sort_, limit, names, with_body, body_depth, as_json):
     """Query a database; one compact line per row (filters applied client-side)."""
     api = api_or_die()
     coll, view_id = resolve_collection(api, ref)
@@ -1164,13 +1194,20 @@ def query(ref, select_, filters, sort_, limit, names, as_json):
     if limit:
         rows = rows[:limit]
     cols = [c.strip() for c in select_.split(",")] if select_ else None
+    bodies = {r["id"]: render_page_body(api, r["id"], body_depth) for r in rows} if with_body else {}
     out = []
     for r in rows:
         picked = {"id": r["id"], **{c: r.get(c) for c in cols}} if cols else r
         if as_json:
+            if with_body:
+                picked["body"] = bodies[r["id"]]
             out.append(picked)
         else:
             click.echo(" | ".join(str(v) for k, v in picked.items() if k not in ("id", "url")) + f"\t{r['url']}")
+            if with_body:
+                click.echo("---")
+                click.echo(bodies[r["id"]])
+                click.echo("---\n")
     if as_json:
         click.echo(json.dumps(out, ensure_ascii=False, indent=1))
 

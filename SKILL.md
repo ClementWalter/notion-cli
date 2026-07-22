@@ -82,12 +82,16 @@ notion_cli.py page <id_or_url>              # props + body
 notion_cli.py page <id_or_url> --props-only # cheapest read
 notion_cli.py page <id_or_url> --no-props   # body only
 notion_cli.py page <id_or_url> --depth 2    # cap nested-children recursion
+notion_cli.py pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
+                                             # otherwise be one `page` call per id (content only, no props)
 
 # Database / data source query — accepts db url, data-source id, collection://…
 notion_cli.py query <db_or_ds> --select ID,Title,Status
 notion_cli.py query <db_or_ds> --filter 'Status=Done' --filter 'ID>195'
 notion_cli.py query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 20
 notion_cli.py query <db_or_ds> --filter 'Due is_empty' --json
+notion_cli.py query <db_or_ds> --filter 'Status=In progress' --with-body   # + every matched row's
+                                             # full page body, in the SAME call — see below
 
 # Filter DSL: =  !=  >  >=  <  <=  ~ (contains)  'Prop is_empty'  'Prop is_not_empty'
 # Applied client-side on flattened values (numeric-aware; ~ is case-insensitive).
@@ -113,6 +117,16 @@ usually already cached for free. This also means **the same page never
 needs re-fetching within a run just to check a different string in it** —
 save it once (`notion_cli.py page <id> --no-props > page.md`) and grep the
 file, don't re-run `page` for every subsequent check.
+
+**Never loop `page <id>` over a query's rows — use `--with-body` or `pages`
+instead.** A `page` call per row is the single biggest source of avoidable
+tool round-trips in a read-heavy session (measured: 60 separate `page`
+calls in one run, one per tracker row — each one a full extra agent turn
+resending the whole growing context, not just an extra API hit). If the ids
+come from a query you're running right now, add `--with-body` to that same
+`query` call — it fetches every matched row's full body in one shot. If the
+ids come from somewhere else (`search`, `resolve`, already known), pass them
+all to `pages <id1> <id2> ...` in one call instead of iterating.
 
 ### Write
 
