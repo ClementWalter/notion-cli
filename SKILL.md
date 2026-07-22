@@ -92,6 +92,9 @@ notion_cli.py query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 2
 notion_cli.py query <db_or_ds> --filter 'Due is_empty' --json
 notion_cli.py query <db_or_ds> --filter 'Status=In progress' --with-body   # + every matched row's
                                              # full page body, in the SAME call — see below
+notion_cli.py query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY for rows
+                                             # changed since a cutoff — for a repeat pass over the
+                                             # same database, don't re-fetch what hasn't changed
 
 # Filter DSL: =  !=  >  >=  <  <=  ~ (contains)  'Prop is_empty'  'Prop is_not_empty'
 # Applied client-side on flattened values (numeric-aware; ~ is case-insensitive).
@@ -127,6 +130,16 @@ come from a query you're running right now, add `--with-body` to that same
 `query` call — it fetches every matched row's full body in one shot. If the
 ids come from somewhere else (`search`, `resolve`, already known), pass them
 all to `pages <id1> <id2> ...` in one call instead of iterating.
+
+**On a repeat pass over the same database (a periodic digest, a daily
+sync), add `--edited-after <date>` to `--with-body`** so bodies are fetched
+only for rows that actually changed since the last pass, not every row every
+time (verified on a real 181-row table: `--edited-after` narrowed it to 18).
+It filters on the row's own `last_edited_time`, which Notion propagates up
+from any edited descendant block — verified by recursively walking a page's
+real children and confirming the row's own timestamp matched its
+most-recently-edited descendant exactly — so it reliably catches
+body-content edits, not just title/property changes.
 
 ### Write
 

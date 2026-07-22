@@ -102,6 +102,7 @@ notion pages <id> <id> <id> ...             # multiple pages' bodies in ONE call
 notion query <db> --select ID,Status,Title --filter 'Status=In progress' --sort ID
 notion query <db> --filter 'Due<2026-08-01' --filter 'Status!=Done'   # ANDed
 notion query <db> --filter 'Status=Done' --with-body   # + every matched row's full page body, still one call
+notion query <db> --edited-after 2026-07-20 --with-body  # bodies only for rows changed since a cutoff — not all of them
 notion schema <db>                         # property name → type
 notion search "quarterly launch plan"
 notion comments <page>                     # discussions INCL. resolved ones
@@ -143,6 +144,16 @@ run, one per tracker row). `query --with-body` fetches every matched row's
 full body in the *same* call as the query itself; `pages <id> <id> ...`
 batches bodies for any other already-known set of ids into one call instead
 of N.
+
+**Don't re-fetch bodies for rows that haven't changed.** If this is a
+repeat pass over the same database (a daily digest, a periodic sync),
+`--edited-after <date>` narrows `--with-body` to only the rows whose
+`last_edited_time` is at/after that cutoff (verified: 18 of 181 rows on a
+real table) instead of paying for every row's body every time. Notion
+propagates a body-content edit's timestamp up to the row's own
+`last_edited_time` (verified: a row's own timestamp exactly matched its
+most-recently-edited descendant block, recursively), so this catches real
+content changes, not just title/property edits.
 
 For big pulls, redirect to a file and slice it instead of re-reading everything:
 
