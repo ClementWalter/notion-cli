@@ -97,8 +97,22 @@ notion_cli.py search "vault launch" --limit 10
 notion_cli.py comments <page_id>      # discussions INCL. RESOLVED (public API can't)
 notion_cli.py comments <page_id> --open-only
 notion_cli.py users [query]           # workspace members (name, email, id)
+notion_cli.py resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
 notion_cli.py blocks <page_id> --depth 2   # block ids (targets for edit/delete)
 ```
+
+**Prefer `resolve <id>` over re-running `users "<name>"`** to look up a
+single id — `users` re-fetches the *entire* workspace member list every
+call, while `resolve` checks the permanent local cache
+(`~/.config/notion-cli/cache/id_names.json`, no TTL since Notion ids are
+immutable) first and only hits the API for ids it hasn't seen before.
+`page`/`query`/`users` all populate this cache automatically as a side
+effect of normal reads, so by the time you need to resolve an id you've
+already encountered (a mentioned user, a linked/breadcrumb page), it's
+usually already cached for free. This also means **the same page never
+needs re-fetching within a run just to check a different string in it** —
+save it once (`notion_cli.py page <id> --no-props > page.md`) and grep the
+file, don't re-run `page` for every subsequent check.
 
 ### Write
 
