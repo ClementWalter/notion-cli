@@ -1130,10 +1130,11 @@ def pages(ids, depth, as_json):
 @click.option("--sort", "sort_", help="'Prop' or 'Prop:desc'")
 @click.option("--limit", type=int, default=None)
 @click.option("--names/--no-names", default=True, help="resolve people to display names")
+@click.option("--edited-after", help="only rows last-edited at/after this UTC date (client-side; also covers body-content edits — Notion propagates a child block's edit up to its page's own last_edited_time)")
 @click.option("--with-body", is_flag=True, help="also fetch and include each matched row's full page body (one call instead of one `page` call per row)")
 @click.option("--body-depth", default=6, show_default=True, help="nested-children recursion cap for --with-body")
 @click.option("--json", "as_json", is_flag=True)
-def query(ref, select_, filters, sort_, limit, names, with_body, body_depth, as_json):
+def query(ref, select_, filters, sort_, limit, names, edited_after, with_body, body_depth, as_json):
     """Query a database; one compact line per row (filters applied client-side)."""
     api = api_or_die()
     coll, view_id = resolve_collection(api, ref)
@@ -1178,6 +1179,9 @@ def query(ref, select_, filters, sort_, limit, names, with_body, body_depth, as_
                     r[col] = ", ".join(labels.get(u.strip(), u.strip()) for u in str(r[col]).split(","))
     matchers = [make_matcher(f, set(sch) | {"id", "url"}) for f in filters]
     rows = [r for r in rows if all(m(r) for m in matchers)]
+    if edited_after:
+        cutoff = _epoch_ms(edited_after)
+        rows = [r for r in rows if rm.get(r["id"], {}).get("last_edited_time", 0) >= cutoff]
     if sort_:
         key, _, direction = sort_.partition(":")
 
