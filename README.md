@@ -47,10 +47,11 @@ npx skills add ClementWalter/notion-cli
 After install, Claude Code picks it up automatically — see
 [`SKILL.md`](SKILL.md) for what the skill exposes.
 
-To also use it directly from a terminal, alias the installed copy:
+To use it from any directory, put the launcher on `$PATH` — the symlink points at
+the checkout, so a `git pull` is all an upgrade takes:
 
 ```bash
-alias notion='uv run ~/.claude/skills/notion-cli/notion_cli.py'
+ln -sfn ~/.claude/skills/notion-cli/bin/notion ~/.local/bin/notion
 ```
 
 ## Install as a standalone CLI
@@ -60,13 +61,14 @@ The CLI is a single-file Python script with
 [`uv`](https://docs.astral.sh/uv/) handles dependencies on the fly:
 
 ```bash
-uv run notion_cli.py --help
+notion --help
 ```
 
-For convenience, alias it:
+To use it from any directory, put the launcher on `$PATH` — the symlink points at
+the checkout, so a `git pull` is all an upgrade takes:
 
 ```bash
-alias notion='uv run /path/to/notion-cli/notion_cli.py'
+ln -sfn /path/to/notion-cli/bin/notion ~/.local/bin/notion
 ```
 
 ## Authentication

@@ -26,10 +26,22 @@ slack-user-cli model) against the same private API the Notion web client uses
 workspace integration or admin approval. That API also exposes **resolved
 comments**, which the official API hides.
 
-## Running
+## How to invoke
+
+Invoke it as **`notion`** — on `$PATH` via a symlink in `~/.local/bin` onto this
+repo's `bin/notion`, so it always runs the current checkout: a `git pull`, or even
+an uncommitted edit, takes effect immediately with nothing to reinstall.
 
 ```bash
-uv run ~/.claude/skills/notion-cli/notion_cli.py <command> [options]
+notion search "query"
+```
+
+Examples in this doc are written that way. If `notion` is not on `$PATH`, run the
+bundled launcher `bin/notion` resolved against this skill's own directory (PEP 723
+— `uv` resolves deps inline on first run), or link it once:
+
+```bash
+ln -sfn <skill-dir>/bin/notion ~/.local/bin/notion
 ```
 
 ## Authentication
@@ -40,8 +52,8 @@ sessions are skipped, the first token that validates wins; may pop one
 keychain "Allow" dialog per app):
 
 ```bash
-notion_cli.py login                # try all known cookie stores
-notion_cli.py login --source arc --space "My Workspace"
+notion login                # try all known cookie stores
+notion login --source arc --space "My Workspace"
 ```
 
 Manual fallback — grab `token_v2` from a logged-in browser (devtools →
@@ -49,9 +61,9 @@ Application → Cookies → `https://www.notion.so` → `token_v2`, value starts
 with `v03:`), then:
 
 ```bash
-notion_cli.py auth                 # prompts for token_v2, hidden input
-notion_cli.py auth --import        # reuse ~/.config/notion-reader/config.json
-notion_cli.py auth --space "My Workspace"    # disambiguate when the login has several workspaces
+notion auth                 # prompts for token_v2, hidden input
+notion auth --import        # reuse ~/.config/notion-reader/config.json
+notion auth --space "My Workspace"    # disambiguate when the login has several workspaces
 ```
 
 Auth binds a (user, space) pair and stores it chmod-600 in
@@ -78,34 +90,34 @@ means re-grab the cookie and re-run `auth`.
 
 ```bash
 # Page: flattened properties + body rendered as compact markdown
-notion_cli.py page <id_or_url>              # props + body
-notion_cli.py page <id_or_url> --props-only # cheapest read
-notion_cli.py page <id_or_url> --no-props   # body only
-notion_cli.py page <id_or_url> --depth 2    # cap nested-children recursion
-notion_cli.py pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
+notion page <id_or_url>              # props + body
+notion page <id_or_url> --props-only # cheapest read
+notion page <id_or_url> --no-props   # body only
+notion page <id_or_url> --depth 2    # cap nested-children recursion
+notion pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
                                              # otherwise be one `page` call per id (content only, no props)
 
 # Database / data source query — accepts db url, data-source id, collection://…
-notion_cli.py query <db_or_ds> --select ID,Title,Status
-notion_cli.py query <db_or_ds> --filter 'Status=Done' --filter 'ID>195'
-notion_cli.py query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 20
-notion_cli.py query <db_or_ds> --filter 'Due is_empty' --json
-notion_cli.py query <db_or_ds> --filter 'Status=In progress' --with-body   # + every matched row's
+notion query <db_or_ds> --select ID,Title,Status
+notion query <db_or_ds> --filter 'Status=Done' --filter 'ID>195'
+notion query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 20
+notion query <db_or_ds> --filter 'Due is_empty' --json
+notion query <db_or_ds> --filter 'Status=In progress' --with-body   # + every matched row's
                                              # full page body, in the SAME call — see below
-notion_cli.py query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY for rows
+notion query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY for rows
                                              # changed since a cutoff — for a repeat pass over the
                                              # same database, don't re-fetch what hasn't changed
 
 # Filter DSL: =  !=  >  >=  <  <=  ~ (contains)  'Prop is_empty'  'Prop is_not_empty'
 # Applied client-side on flattened values (numeric-aware; ~ is case-insensitive).
 
-notion_cli.py schema <db_or_ds>       # property name → type (+ collection/view ids)
-notion_cli.py search "vault launch" --limit 10
-notion_cli.py comments <page_id>      # discussions INCL. RESOLVED (public API can't)
-notion_cli.py comments <page_id> --open-only
-notion_cli.py users [query]           # workspace members (name, email, id)
-notion_cli.py resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
-notion_cli.py blocks <page_id> --depth 2   # block ids (targets for edit/delete)
+notion schema <db_or_ds>       # property name → type (+ collection/view ids)
+notion search "vault launch" --limit 10
+notion comments <page_id>      # discussions INCL. RESOLVED (public API can't)
+notion comments <page_id> --open-only
+notion users [query]           # workspace members (name, email, id)
+notion resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
+notion blocks <page_id> --depth 2   # block ids (targets for edit/delete)
 ```
 
 **Prefer `resolve <id>` over re-running `users "<name>"`** to look up a
@@ -118,7 +130,7 @@ effect of normal reads, so by the time you need to resolve an id you've
 already encountered (a mentioned user, a linked/breadcrumb page), it's
 usually already cached for free. This also means **the same page never
 needs re-fetching within a run just to check a different string in it** —
-save it once (`notion_cli.py page <id> --no-props > page.md`) and grep the
+save it once (`notion page <id> --no-props > page.md`) and grep the
 file, don't re-run `page` for every subsequent check.
 
 **Never loop `page <id>` over a query's rows — use `--with-body` or `pages`
@@ -145,34 +157,34 @@ body-content edits, not just title/property changes.
 
 ```bash
 # Create a row in a database — properties are schema-coerced from strings
-notion_cli.py create --parent <db_or_ds> \
+notion create --parent <db_or_ds> \
   --prop 'Title=RFQ swap beta' --prop 'Status=Triage' \
   --prop 'Owner=user://<user-uuid>…' --prop 'Parent item=https://notion.so/<id>' \
   --prop 'Due=2026-07-31' --icon 💸 --md body.md
 
 # List a database's templates, then clone one at create time
-notion_cli.py templates <db_or_ds>
-notion_cli.py create --parent <db_or_ds> --prop 'Title=…' --template 'AI new item'
+notion templates <db_or_ds>
+notion create --parent <db_or_ds> --prop 'Title=…' --template 'AI new item'
 # --template clones the template's body SYNCHRONOUSLY into the create
 # transaction (no async placeholder race). Fill the cloned placeholders after
 # with `edit`/`append`; --md/--body appends beneath the cloned body.
 
 # Update properties (empty value clears; date ranges as start..end)
-notion_cli.py update <page> --prop 'Status=Done' --prop 'Due='
-notion_cli.py update <page> --archive
+notion update <page> --prop 'Status=Done' --prop 'Due='
+notion update <page> --archive
 
 # Append markdown (headings, - / 1. lists, - [ ] todos, > quotes,
 # > [!💸:blue_bg] callouts, ``` fences, | tables |, --- dividers;
 # inline: **bold**, `code`, [label](url), @user(uuid), @page(uuid-or-url))
-notion_cli.py append <page> "one liner"
-notion_cli.py append <page> --md notes.md
+notion append <page> "one liner"
+notion append <page> --md notes.md
 cat notes.md | notion_cli.py append <page> --md -
 
 # In-place text replace (preserves formatting; unique match required unless --all)
-notion_cli.py edit <page> "1,296,000" "1,335,000"
+notion edit <page> "1,296,000" "1,335,000"
 
-notion_cli.py comment <page> "done — see @page(<id>)"
-notion_cli.py delete-block <block_id>
+notion comment <page> "done — see @page(<id>)"
+notion delete-block <block_id>
 ```
 
 ## Notion-writes etiquette (project rules)
