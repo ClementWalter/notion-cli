@@ -176,12 +176,21 @@ notion update <page> --archive
 # Append markdown (headings, - / 1. lists, - [ ] todos, > quotes,
 # > [!💸:blue_bg] callouts, ``` fences, | tables |, --- dividers;
 # inline: **bold**, `code`, [label](url), @user(uuid), @page(uuid-or-url))
+# A GFM table on a page that already has one table with the same columns is
+# merged into it (new rows go above a trailing "Running total" row).
 notion append <page> "one liner"
 notion append <page> --md notes.md
 cat notes.md | notion_cli.py append <page> --md -
+notion append <page> --md - <<'MD'
+| 2026-08-25 | 39,000 |  | [Slack](https://...) |
+MD
 
-# In-place text replace (preserves formatting; unique match required unless --all)
+# In-place text replace (preserves formatting; unique match required unless --all).
+# Searches every property, including table cells — not just block titles.
+# A unique snippet of the table as `page` renders it rewrites rows (insert/delete/update).
 notion edit <page> "1,296,000" "1,335,000"
+notion edit <page> "| 2026-08-24 | 50,000 |" "| 2026-08-24 | 50,000 |
+| 2026-08-25 | 39,000 |"
 
 notion comment <page> "done — see @page(<id>)"
 notion delete-block <block_id>
@@ -216,6 +225,11 @@ notion delete-block <block_id>
   the server.
 - Formula/rollup values are computed server-side and not stored on the row
   record — they flatten to None.
+- Simple-table cells live in `table_row.properties[<column-id>]`, not
+  `title`. `edit` searches all properties (so a running-total cell matches)
+  and can splice the GFM `page` renders for a table to insert/delete rows.
+  `append` of a `| table |` creates a real Notion table; if the page already
+  has exactly one table with the same column count, rows are merged into it.
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - The client honors `Retry-After` and backs off on 429/5xx.

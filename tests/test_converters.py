@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import notion_cli  # noqa: E402
 from notion_cli import (  # noqa: E402
     _epoch_ms,
+    apply_table_md_replace,
     block_to_spec,
     coerce_segments,
     dash,
@@ -24,10 +25,13 @@ from notion_cli import (  # noqa: E402
     md_to_segments,
     md_to_v3_blocks,
     merge_id_cache,
+    parse_gfm_table,
     parse_id,
+    property_text_matches,
     save_id_cache,
     seg_plain,
     seg_to_md,
+    split_gfm_row,
 )
 
 UUID = "11aa22bb-33cc-44dd-55ee-66ff77aa88bb"
@@ -171,6 +175,84 @@ def test_v3_divider():
 
 def test_v3_paragraph_is_text():
     assert md_to_v3_blocks("hello")[0]["type"] == "text"
+
+
+# ---- GFM tables --------------------------------------------------------------
+
+
+def test_split_gfm_row_empty_cells():
+    assert split_gfm_row("| 2026-08-24 | 50,000 |  | [Slack](https://x.test) |") == [
+        "2026-08-24", "50,000", "", "[Slack](https://x.test)",
+    ]
+
+
+def test_parse_gfm_table_header_and_separator():
+    t = parse_gfm_table(["| Date | Amount |", "|---|---|", "| 2026-08-25 | 39,000 |"])
+    assert t["header"] is True
+    assert t["rows"] == [["Date", "Amount"], ["2026-08-25", "39,000"]]
+
+
+def test_parse_gfm_table_separator_with_spaces():
+    t = parse_gfm_table(["| a | b |", "| --- | --- |", "| 1 | 2 |"])
+    assert t["header"] is True
+    assert t["rows"][1] == ["1", "2"]
+
+
+def test_v3_table_type_and_header():
+    blocks = md_to_v3_blocks("| Date | Amount |\n| --- | --- |\n| 2026-08-25 | 39,000 |")
+    assert blocks[0]["type"] == "table"
+    assert blocks[0]["format"]["table_block_column_header"] is True
+    assert len(blocks[0]["children"]) == 2
+    assert blocks[0]["children"][0]["type"] == "table_row"
+    assert len(blocks[0]["format"]["table_block_column_order"]) == 2
+
+
+def test_v3_table_bold_and_link_cells():
+    blocks = md_to_v3_blocks("| **Running total** | [Slack](https://x.test) |\n| --- | --- |")
+    cols = blocks[0]["format"]["table_block_column_order"]
+    row = blocks[0]["children"][0]["properties"]
+    assert row[cols[0]] == [["Running total", [["b"]]]]
+    assert row[cols[1]] == [["Slack", [["a", "https://x.test"]]]]
+
+
+def test_v3_table_does_not_swallow_following_paragraph():
+    blocks = md_to_v3_blocks("| a | b |\n| --- | --- |\n| 1 | 2 |\n\nhello")
+    assert [b["type"] for b in blocks] == ["table", "text"]
+
+
+def test_apply_table_md_replace_inserts_row():
+    rendered = (
+        "| Date | Amount | Note | Source |\n"
+        "|---|---|---|---|\n"
+        "| 2026-08-24 | 50,000 |  | [Slack](https://x.test) |\n"
+        "| **Running total** | **2,680,000** | toward ~5M |  |"
+    )
+    old = (
+        "| 2026-08-24 | 50,000 |  | [Slack](https://x.test) |\n"
+        "| **Running total** | **2,680,000** | toward ~5M |  |"
+    )
+    new = (
+        "| 2026-08-24 | 50,000 |  | [Slack](https://x.test) |\n"
+        "| 2026-08-25 | 39,000 |  | [Slack](https://y.test) |\n"
+        "| **Running total** | **2,719,000** | toward ~5M |  |"
+    )
+    parsed = apply_table_md_replace(rendered, old, new)
+    assert parsed["rows"][-2] == ["2026-08-25", "39,000", "", "[Slack](https://y.test)"]
+    assert parsed["rows"][-1][1] == "**2,719,000**"
+
+
+def test_property_text_matches_table_cells_not_just_title():
+    blks = {
+        "row": {
+            "id": "row",
+            "type": "table_row",
+            "alive": True,
+            "properties": {"]NN<": [["2,680,000", [["b"]]]]},
+        }
+    }
+    hits, spanning = property_text_matches(blks, "2,680,000")
+    assert hits == [("row", "]NN<")]
+    assert spanning == []
 
 
 # ---- property flattening --------------------------------------------------------
