@@ -518,6 +518,229 @@ def _render_table(api: Api, b: dict, blocks: dict, names: dict, ind: str) -> lis
     return out
 
 
+_TABLE_SEP_CELL = re.compile(r"^:?-{3,}:?$")
+
+
+def split_gfm_row(line: str) -> list[str]:
+    """Split a GFM table line into stripped cells (leading/trailing pipes optional)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def parse_gfm_table(lines: list[str]) -> dict | None:
+    """Parse GFM table lines into {header, rows, n_cols}. None if empty/not a table."""
+    body = [ln for ln in lines if ln.strip()]
+    if not body or not all(ln.strip().startswith("|") for ln in body):
+        return None
+    parsed = [split_gfm_row(ln) for ln in body]
+    if not parsed or not any(parsed[0]):
+        return None
+    header = False
+    if len(parsed) >= 2 and parsed[1] and all(_TABLE_SEP_CELL.fullmatch(c) for c in parsed[1]):
+        header = True
+        parsed = [parsed[0], *parsed[2:]]
+    n = max(len(r) for r in parsed)
+    rows = [r + [""] * (n - len(r)) for r in parsed]
+    return {"header": header, "rows": rows, "n_cols": n}
+
+
+def _new_col_ids(n: int) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    while len(out) < n:
+        cid = uuidlib.uuid4().hex[:4]
+        if cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def _table_spec(rows: list[list[str]], header: bool) -> dict:
+    n = max((len(r) for r in rows), default=0)
+    cols = _new_col_ids(n)
+    children = []
+    for row in rows:
+        padded = row + [""] * (n - len(row))
+        children.append({"type": "table_row", "properties": {c: md_to_segments(cell) for c, cell in zip(cols, padded)}})
+    return {
+        "type": "table",
+        "properties": {},
+        "format": {"table_block_column_order": cols, "table_block_column_header": header},
+        "children": children,
+    }
+
+
+def _norm_cell(s: str) -> str:
+    return re.sub(r"[*_`]", "", s or "").strip().lower()
+
+
+def _row_cells(row: dict, order: list[str], names: dict | None = None) -> list[str]:
+    props = row.get("properties") or {}
+    return [seg_to_md(props.get(col), names) for col in order]
+
+
+def _alive_content(block: dict, blocks: dict) -> list[str]:
+    return [cid for cid in block.get("content") or [] if blocks.get(cid, {}).get("alive", True)]
+
+
+def _ensure_table_rows(api: Api, table: dict, blocks: dict) -> None:
+    missing = [i for i in table.get("content") or [] if i not in blocks]
+    if missing:
+        blocks.update(api.records("block", missing))
+
+
+def _cells_to_props(order: list[str], cells: list[str]) -> dict:
+    padded = list(cells) + [""] * max(0, len(order) - len(cells))
+    return {col: md_to_segments(cell) for col, cell in zip(order, padded)}
+
+
+def _is_totals_row(cells: list[str]) -> bool:
+    return _norm_cell(cells[0] if cells else "") == "running total"
+
+
+def _new_row_record(api: Api, table_id: str, props: dict) -> tuple[str, dict]:
+    rid = str(uuidlib.uuid4())
+    record = {
+        "id": rid,
+        "type": "table_row",
+        "properties": props,
+        "parent_id": table_id,
+        "parent_table": "block",
+        "alive": True,
+        "space_id": api.space_id,
+        "version": 1,
+        "created_time": now_ms(),
+        "last_edited_time": now_ms(),
+    }
+    return rid, record
+
+
+def _table_column_order(table: dict) -> list[str]:
+    order = list((table.get("format") or {}).get("table_block_column_order") or [])
+    if not order:
+        raise click.ClickException("table has no columns")
+    return order
+
+
+def _reject_wider_rows(rows: list[list[str]], n_cols: int, what: str) -> None:
+    if rows and max(len(r) for r in rows) > n_cols:
+        raise click.ClickException(f"{what} has {max(len(r) for r in rows)} columns, table has {n_cols}")
+
+
+def table_replace_row_ops(api: Api, table: dict, blocks: dict, new_rows: list[list[str]]) -> list[dict]:
+    """Rewrite a table's rows in order to match new_rows (including header row)."""
+    _ensure_table_rows(api, table, blocks)
+    order = _table_column_order(table)
+    _reject_wider_rows(new_rows, len(order), "replacement")
+    existing = _alive_content(table, blocks)
+    ops: list[dict] = []
+    tid = table["id"]
+    last_id = None
+    for i, cells in enumerate(new_rows):
+        props = _cells_to_props(order, cells)
+        if i < len(existing):
+            rid = existing[i]
+            ops.append(op("block", rid, ["properties"], "set", props, api.space_id))
+            ops.append(op("block", rid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+            last_id = rid
+        else:
+            rid, record = _new_row_record(api, tid, props)
+            ops.append(op("block", rid, [], "set", record, api.space_id))
+            args: dict[str, str] = {"id": rid}
+            if last_id:
+                args["after"] = last_id
+            ops.append(op("block", tid, ["content"], "listAfter", args, api.space_id))
+            last_id = rid
+    for rid in existing[len(new_rows):]:
+        ops.append(op("block", rid, [], "update", {"alive": False}, api.space_id))
+        ops.append(op("block", tid, ["content"], "listRemove", {"id": rid}, api.space_id))
+    ops.append(op("block", tid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    return ops
+
+
+def table_insert_row_ops(api: Api, table: dict, blocks: dict, new_rows: list[list[str]]) -> list[dict]:
+    """Append rows, inserting before a trailing 'Running total' row when present."""
+    _ensure_table_rows(api, table, blocks)
+    order = _table_column_order(table)
+    _reject_wider_rows(new_rows, len(order), "incoming table")
+    existing = _alive_content(table, blocks)
+    after_id = existing[-1] if existing else None
+    before_id = None
+    if existing:
+        last_cells = _row_cells(blocks.get(existing[-1], {}), order)
+        if _is_totals_row(last_cells):
+            if len(existing) >= 2:
+                after_id = existing[-2]
+            else:
+                after_id = None
+                before_id = existing[0]
+    ops: list[dict] = []
+    tid = table["id"]
+    for cells in new_rows:
+        props = _cells_to_props(order, cells)
+        rid, record = _new_row_record(api, tid, props)
+        ops.append(op("block", rid, [], "set", record, api.space_id))
+        if before_id:
+            ops.append(op("block", tid, ["content"], "listBefore", {"id": rid, "before": before_id}, api.space_id))
+            before_id = None
+            after_id = rid
+        else:
+            args: dict[str, str] = {"id": rid}
+            if after_id:
+                args["after"] = after_id
+            ops.append(op("block", tid, ["content"], "listAfter", args, api.space_id))
+            after_id = rid
+    ops.append(op("block", tid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    return ops
+
+
+def property_text_matches(blks: dict, old: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Find (block_id, property_key) whose segments contain `old`.
+
+    `hits` are replacements that stay inside one segment; `spanning` means
+    `old` is only visible after concatenating adjacent segments.
+    """
+    hits: list[tuple[str, str]] = []
+    spanning: list[tuple[str, str]] = []
+    for bid, b in blks.items():
+        if not b.get("alive", True):
+            continue
+        props = b.get("properties") or {}
+        if not isinstance(props, dict):
+            continue
+        for key, segs in props.items():
+            if not isinstance(segs, list) or not segs:
+                continue
+            in_seg = any(
+                isinstance(seg, list) and seg and isinstance(seg[0], str) and old in seg[0]
+                for seg in segs
+                if seg and seg[0] not in ("‣", "⁍")
+            )
+            if in_seg:
+                hits.append((bid, key))
+            elif old in seg_plain(segs):
+                spanning.append((bid, key))
+    return hits, spanning
+
+
+def apply_table_md_replace(rendered: str, old: str, new: str, replace_all: bool = False) -> dict:
+    """Replace `old` inside a rendered GFM table and re-parse."""
+    n = rendered.count(old)
+    if n == 0:
+        raise click.ClickException("no match")
+    if n > 1 and not replace_all:
+        raise click.ClickException(f"{n} matches — pass --all or narrow the string")
+    updated = rendered.replace(old, new) if replace_all else rendered.replace(old, new, 1)
+    parsed = parse_gfm_table(updated.splitlines())
+    if not parsed:
+        raise click.ClickException("replacement is not a valid table")
+    return parsed
+
+
 # --------------------------------------------------------------------------
 # markdown -> v3 blocks
 # --------------------------------------------------------------------------
@@ -586,6 +809,23 @@ def md_to_v3_blocks(md: str) -> list[dict]:
             blk = {"type": "quote", "properties": {"title": md_to_segments(stripped[2:])}}
         elif re.fullmatch(r"-{3,}", stripped):
             blk = {"type": "divider", "properties": {}}
+        elif stripped.startswith("|") and "|" in stripped[1:]:
+            tlines = [stripped]
+            i += 1
+            while i < len(lines):
+                nxt = lines[i].lstrip(" ")
+                if nxt.startswith("|") and "|" in nxt[1:]:
+                    tlines.append(nxt)
+                    i += 1
+                else:
+                    break
+            parsed = parse_gfm_table(tlines)
+            if parsed:
+                target(indent).append(_table_spec(parsed["rows"], parsed["header"]))
+                continue
+            blk = {"type": "text", "properties": {"title": md_to_segments(stripped)}}
+            target(indent).append(blk)
+            continue
         else:
             blk = {"type": "text", "properties": {"title": md_to_segments(stripped)}}
 
@@ -1457,6 +1697,32 @@ def append(page_ref, text, md_file):
     api = api_or_die()
     pid = parse_id(page_ref)
     specs = md_to_v3_blocks(_read_md(md_file, text))
+    if len(specs) == 1 and specs[0].get("type") == "table":
+        page = api.load_page(pid)
+        blks = page.get("block", {})
+        existing = [b for b in blks.values() if b.get("type") == "table" and b.get("alive", True)]
+        if len(existing) == 1:
+            table = existing[0]
+            order = (table.get("format") or {}).get("table_block_column_order") or []
+            in_order = (specs[0].get("format") or {}).get("table_block_column_order") or []
+            if order and len(order) == len(in_order):
+                rows = [
+                    [seg_to_md(ch.get("properties", {}).get(c)) for c in in_order]
+                    for ch in specs[0].get("children") or []
+                ]
+                if specs[0].get("format", {}).get("table_block_column_header") and rows:
+                    _ensure_table_rows(api, table, blks)
+                    content = _alive_content(table, blks)
+                    if content:
+                        existing_header = _row_cells(blks.get(content[0], {}), order)
+                        if [_norm_cell(c) for c in rows[0]] == [_norm_cell(c) for c in existing_header]:
+                            rows = rows[1:]
+                if rows:
+                    ops = table_insert_row_ops(api, table, blks, rows)
+                    ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+                    api.transact(ops)
+                    click.echo(f"appended {len(rows)} table row(s) to {page_url(pid)}")
+                    return
     ops, top = blocks_to_ops(api, specs, pid)
     ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
     api.transact(ops)
@@ -1588,40 +1854,59 @@ def edit(page_ref, old, new, replace_all):
     Replacement happens inside individual text segments so formatting and
     mentions elsewhere in the block are preserved; a match spanning a
     formatting boundary is reported instead of mangled.
+
+    All block properties are searched, not just `title` — so table cells
+    match. If `old` is a snippet of the table as `page` renders it (GFM),
+    the table is rewritten (insert/delete/update rows) to match `new`.
     """
     api = api_or_die()
     pid = parse_id(page_ref)
     tables = api.load_page(pid)
     blks = tables.get("block", {})
-    hits: list[str] = []
-    spanning: list[str] = []
-    for bid, b in blks.items():
-        if not b.get("alive", True):
-            continue
-        title = b.get("properties", {}).get("title")
-        if not title:
-            continue
-        in_seg = any(old in seg[0] for seg in title if seg and seg[0] not in ("‣", "⁍"))
-        if in_seg:
-            hits.append(bid)
-        elif old in seg_plain(title):
-            spanning.append(bid)
+    hits, spanning = property_text_matches(blks, old)
     if spanning:
-        raise click.ClickException(f"match spans formatting boundaries in block(s) {', '.join(spanning)} — narrow the string (see `blocks`)")
-    if not hits:
+        ids = [bid for bid, _ in spanning]
+        raise click.ClickException(f"match spans formatting boundaries in block(s) {', '.join(ids)} — narrow the string (see `blocks`)")
+    if hits:
+        if len(hits) > 1 and not replace_all:
+            for bid, key in hits:
+                click.echo(f"match in {bid} ({blks[bid]['type']}.{key})", err=True)
+            raise click.ClickException(f"{len(hits)} matches — pass --all or narrow the string")
+        ops = []
+        for bid, key in hits:
+            segs = blks[bid]["properties"][key]
+            new_segs = [[seg[0].replace(old, new), *seg[1:]] if seg and seg[0] not in ("‣", "⁍") else seg for seg in segs]
+            ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
+            ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+        api.transact(ops)
+        click.echo(f"replaced in {len(hits)} block(s)")
+        return
+
+    names = _name_map(tables)
+    table_hits: list[tuple[str, dict, str, int]] = []
+    for bid, b in blks.items():
+        if b.get("type") != "table" or not b.get("alive", True):
+            continue
+        rendered = "\n".join(_render_table(api, b, blks, names, ""))
+        n = rendered.count(old)
+        if n:
+            table_hits.append((bid, b, rendered, n))
+    if not table_hits:
         raise click.ClickException("no match")
-    if len(hits) > 1 and not replace_all:
-        for bid in hits:
-            click.echo(f"match in {bid} ({blks[bid]['type']})", err=True)
-        raise click.ClickException(f"{len(hits)} matches — pass --all or narrow the string")
+    total = sum(n for *_, n in table_hits)
+    if total > 1 and not replace_all:
+        for bid, b, _, n in table_hits:
+            click.echo(f"match in table {bid} ({n}x)", err=True)
+        raise click.ClickException(f"{total} matches — pass --all or narrow the string")
     ops = []
-    for bid in hits:
-        title = blks[bid]["properties"]["title"]
-        new_title = [[seg[0].replace(old, new), *seg[1:]] if seg and seg[0] not in ("‣", "⁍") else seg for seg in title]
-        ops.append(op("block", bid, ["properties", "title"], "set", new_title, api.space_id))
-        ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    n_tables = 0
+    for bid, b, rendered, n in table_hits:
+        parsed = apply_table_md_replace(rendered, old, new, replace_all=replace_all)
+        ops += table_replace_row_ops(api, b, blks, parsed["rows"])
+        n_tables += 1
+    ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
     api.transact(ops)
-    click.echo(f"replaced in {len(hits)} block(s)")
+    click.echo(f"replaced table markdown in {n_tables} table(s)")
 
 
 @cli.command(name="delete-block")
