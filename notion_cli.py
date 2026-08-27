@@ -119,6 +119,65 @@ def cache_names(kind: str, mapping: dict[str, str]) -> None:
         save_id_cache(cache)
 
 
+def unique_names(id_to_name: dict[str, str]) -> dict[str, str]:
+    """Lowercased display name → id, only when that name is unique."""
+    counts: dict[str, int] = {}
+    for name in id_to_name.values():
+        key = (name or "").strip().lower()
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    out: dict[str, str] = {}
+    for rid, name in id_to_name.items():
+        key = (name or "").strip().lower()
+        if key and counts.get(key) == 1:
+            out[key] = rid
+    return out
+
+
+def rewrite_named_mentions(text: str, users: dict[str, str]) -> str:
+    """Turn `@Ada` / `@Ada Lovelace` into `@user(uuid)` when the name is unique.
+
+    Longest name wins. Leaves emails and explicit `@user(` / `@page(` alone.
+    `users` is lowercase display name → uuid.
+    """
+    if not text or not users:
+        return text
+    names = sorted(users, key=len, reverse=True)
+    pat = re.compile(
+        r"(?<![\w.])@(?!(?:user|page)\()(" + "|".join(re.escape(n) for n in names) + r")\b",
+        re.IGNORECASE,
+    )
+
+    def repl(m: re.Match) -> str:
+        uid = users.get(m.group(1).lower())
+        return f"@user({uid})" if uid else m.group(0)
+
+    return pat.sub(repl, text)
+
+
+HARD_DELETE_KEYS = frozenset({"permanentlyDelete", "permanently_deleted_time"})
+HARD_DELETE_PATHS = frozenset({"deleteblocks"})
+
+
+def _contains_hard_delete(obj: object) -> bool:
+    if isinstance(obj, dict):
+        if HARD_DELETE_KEYS.intersection(obj):
+            return True
+        return any(_contains_hard_delete(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_hard_delete(v) for v in obj)
+    return False
+
+
+def refuse_hard_delete(path: str, body: dict | None = None) -> None:
+    """Regular delete only: trash (`alive=false`). Never permanently delete."""
+    leaf = path.strip("/").split("/")[-1].lower()
+    if leaf in HARD_DELETE_PATHS or (body is not None and _contains_hard_delete(body)):
+        raise click.ClickException(
+            "hard delete is forbidden — use `delete` / `delete-block` (trash, recoverable)"
+        )
+
+
 class Api:
     """v3 transport: token_v2 cookie + active-user header, retry on 429/5xx.
 
@@ -143,12 +202,21 @@ class Api:
             self.s.headers["x-notion-active-user-header"] = self.user_id
 
     def post(self, path: str, body: dict, *, retries: int = 5) -> dict:
+        refuse_hard_delete(path, body)
+        delay = 8
         for attempt in range(retries):
             resp = self.s.post(f"{API_BASE}/{path}", json=body, timeout=60)
             if resp.status_code == 429 or resp.status_code >= 500:
-                wait = float(resp.headers.get("Retry-After", 2 ** attempt))
+                raw = resp.headers.get("Retry-After")
+                try:
+                    hinted = float(raw) if raw is not None else 0.0
+                except ValueError:
+                    hinted = 0.0
+                # Retry-After: 0 is a lie — never wait less than 8/16/32/60.
+                wait = max(hinted, delay)
                 log.warning("%s -> %s, retrying in %.1fs", path, resp.status_code, wait)
                 time.sleep(wait)
+                delay = min(delay * 2, 60)
                 continue
             if resp.status_code == 401:
                 raise click.ClickException("401 — token_v2 expired; re-run `auth`")
@@ -274,8 +342,12 @@ def page_url(pid: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def seg_to_md(segments: list | None, names: dict[str, str] | None = None) -> str:
-    """Render v3 segments. `names` optionally maps user/page ids to labels."""
+def seg_to_md(segments: list | None, names: dict[str, str] | None = None, *, writeable: bool = False) -> str:
+    """Render v3 segments. `names` optionally maps user/page ids to labels.
+
+    `writeable=True` emits `@user(uuid)` / `@page(uuid)` so the body can be
+    written back without guessing display names.
+    """
     if not segments:
         return ""
     names = names or {}
@@ -288,9 +360,9 @@ def seg_to_md(segments: list | None, names: dict[str, str] | None = None) -> str
             for m in marks:
                 kind = m[0]
                 if kind == "u":
-                    rendered = f"@{names.get(m[1], m[1])}"
+                    rendered = f"@user({m[1]})" if writeable else f"@{names.get(m[1], m[1])}"
                 elif kind == "p":
-                    rendered = f"[{names.get(m[1], 'page')}]({page_url(m[1])})"
+                    rendered = f"@page({m[1]})" if writeable else f"[{names.get(m[1], 'page')}]({page_url(m[1])})"
                 elif kind == "d":
                     d = m[1]
                     rendered = d.get("start_date", "") + (f"..{d['end_date']}" if d.get("end_date") else "")
@@ -345,7 +417,11 @@ _INLINE = re.compile(
 )
 
 
-def md_to_segments(text: str) -> list:
+def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
+    if users is None:
+        users = unique_names(load_id_cache().get("users", {}))
+    if users:
+        text = rewrite_named_mentions(text, users)
     segs: list = []
     pos = 0
     for m in _INLINE.finditer(text):
@@ -375,7 +451,7 @@ _HEADINGS = {"header": "#", "sub_header": "##", "sub_sub_header": "###"}
 _COLOR_TO_MD = re.compile(r"_background$")
 
 
-def render_page_body(api: Api, page_id: str, max_depth: int) -> str:
+def render_page_body(api: Api, page_id: str, max_depth: int, *, writeable: bool = False) -> str:
     tables = api.load_page(page_id)
     blocks = tables.get("block", {})
     names = _name_map(tables)
@@ -397,7 +473,7 @@ def render_page_body(api: Api, page_id: str, max_depth: int) -> str:
         names.update(resolved)
         cache_names("users", resolved)
     root = blocks.get(page_id, {})
-    lines = _render_children(api, root.get("content", []), blocks, names, 0, max_depth)
+    lines = _render_children(api, root.get("content", []), blocks, names, 0, max_depth, writeable=writeable)
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
 
 
@@ -413,7 +489,7 @@ def _name_map(tables: dict) -> dict[str, str]:
     return names
 
 
-def _render_children(api: Api, ids: list[str], blocks: dict, names: dict, depth: int, max_depth: int) -> list[str]:
+def _render_children(api: Api, ids: list[str], blocks: dict, names: dict, depth: int, max_depth: int, *, writeable: bool = False) -> list[str]:
     lines: list[str] = []
     missing = [i for i in ids if i not in blocks]
     if missing:
@@ -422,16 +498,16 @@ def _render_children(api: Api, ids: list[str], blocks: dict, names: dict, depth:
         b = blocks.get(cid)
         if not b or not b.get("alive", True):
             continue
-        lines += _render_block(api, b, blocks, names, depth, max_depth)
+        lines += _render_block(api, b, blocks, names, depth, max_depth, writeable=writeable)
     return lines
 
 
-def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_depth: int) -> list[str]:
+def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_depth: int, *, writeable: bool = False) -> list[str]:
     t = b.get("type")
     ind = "  " * depth
     props = b.get("properties", {})
     fmt = b.get("format", {})
-    title = seg_to_md(props.get("title"), names)
+    title = seg_to_md(props.get("title"), names, writeable=writeable)
     lines: list[str] = []
     recurse = True
 
@@ -463,7 +539,7 @@ def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_
         # signed S3 sources are expiring noise — render the name/caption only,
         # keep genuinely external urls
         src = fmt.get("display_source") or seg_plain(props.get("source"))
-        caption = seg_to_md(props.get("caption"), names)
+        caption = seg_to_md(props.get("caption"), names, writeable=writeable)
         if src and src.startswith("http") and "secure.notion-static" not in src and "amazonaws" not in src and "/attachment:" not in src:
             lines.append(f"{ind}![{t}: {caption or src}]({src})")
         else:
@@ -480,7 +556,7 @@ def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_
         lines.append(f"{ind}§db [{cname or 'database'}]({page_url(b['id'])})")
         recurse = False
     elif t == "table":
-        lines += _render_table(api, b, blocks, names, ind)
+        lines += _render_table(api, b, blocks, names, ind, writeable=writeable)
         recurse = False
     elif t == "alias":
         target = (fmt.get("alias_pointer") or {}).get("id", "")
@@ -497,11 +573,11 @@ def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_
             lines.append(f"{ind}  […children truncated at depth {max_depth}]")
         else:
             child_depth = depth if t in ("column_list", "column", "transclusion_container", "transclusion_reference") else depth + 1
-            lines += _render_children(api, b["content"], blocks, names, child_depth, max_depth)
+            lines += _render_children(api, b["content"], blocks, names, child_depth, max_depth, writeable=writeable)
     return lines
 
 
-def _render_table(api: Api, b: dict, blocks: dict, names: dict, ind: str) -> list[str]:
+def _render_table(api: Api, b: dict, blocks: dict, names: dict, ind: str, *, writeable: bool = False) -> list[str]:
     order = b.get("format", {}).get("table_block_column_order", [])
     header = b.get("format", {}).get("table_block_column_header", False)
     ids = b.get("content", [])
@@ -511,7 +587,7 @@ def _render_table(api: Api, b: dict, blocks: dict, names: dict, ind: str) -> lis
     out = []
     for i, rid in enumerate(ids):
         row = blocks.get(rid, {})
-        cells = [seg_to_md(row.get("properties", {}).get(col), names) for col in order]
+        cells = [seg_to_md(row.get("properties", {}).get(col), names, writeable=writeable) for col in order]
         out.append(f"{ind}| " + " | ".join(cells) + " |")
         if i == 0 and header:
             out.append(f"{ind}|" + "---|" * len(cells))
@@ -698,13 +774,20 @@ def table_insert_row_ops(api: Api, table: dict, blocks: dict, new_rows: list[lis
     return ops
 
 
-def property_text_matches(blks: dict, old: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+def property_text_matches(
+    blks: dict,
+    old: str,
+    names: dict[str, str] | None = None,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
     """Find (block_id, property_key) whose segments contain `old`.
 
-    `hits` are replacements that stay inside one segment; `spanning` means
-    `old` is only visible after concatenating adjacent segments.
+    `hits` stay inside one text segment. `whole` is a rendered mention that
+    equals `old` (`@Ada`). `spanning` is only visible after concatenating
+    adjacent segments.
     """
+    names = names or {}
     hits: list[tuple[str, str]] = []
+    whole: list[tuple[str, str]] = []
     spanning: list[tuple[str, str]] = []
     for bid, b in blks.items():
         if not b.get("alive", True):
@@ -722,9 +805,61 @@ def property_text_matches(blks: dict, old: str) -> tuple[list[tuple[str, str]], 
             )
             if in_seg:
                 hits.append((bid, key))
+                continue
+            rendered = seg_to_md(segs, names)
+            if rendered == old:
+                whole.append((bid, key))
             elif old in seg_plain(segs):
                 spanning.append((bid, key))
-    return hits, spanning
+    return hits, whole, spanning
+
+
+_HEADING_LEVEL = {"header": 1, "sub_header": 2, "sub_sub_header": 3}
+
+
+def find_section(ids: list[str], blocks: dict, heading: str, parent: str = "page") -> tuple[str | None, str | None, list[str]]:
+    """Locate a heading and the sibling ids that belong to its section."""
+    want = heading.strip().lower()
+    exact: list[tuple[str, str, list[str]]] = []
+    fuzzy: list[tuple[str, str, list[str]]] = []
+
+    def walk(content: list[str], par: str) -> None:
+        for bid in content:
+            b = blocks.get(bid) or {}
+            if not b.get("alive", True):
+                continue
+            if b.get("type") in _HEADING_LEVEL:
+                title = seg_plain(b.get("properties", {}).get("title")).strip()
+                rec = (bid, par, content)
+                if title.lower() == want:
+                    exact.append(rec)
+                elif want in title.lower():
+                    fuzzy.append(rec)
+            kids = [c for c in (b.get("content") or []) if (blocks.get(c) or {}).get("alive", True)]
+            if kids:
+                walk(kids, bid)
+
+    walk(ids, parent)
+    hit = (exact or fuzzy)
+    if not hit:
+        return None, None, []
+    hid, par, siblings = hit[0]
+    level = _HEADING_LEVEL[blocks[hid]["type"]]
+    after = False
+    kids: list[str] = []
+    for sid in siblings:
+        if sid == hid:
+            after = True
+            continue
+        if not after:
+            continue
+        sb = blocks.get(sid) or {}
+        if not sb.get("alive", True):
+            continue
+        if sb.get("type") in _HEADING_LEVEL and _HEADING_LEVEL[sb["type"]] <= level:
+            break
+        kids.append(sid)
+    return hid, par, kids
 
 
 def apply_table_md_replace(rendered: str, old: str, new: str, replace_all: bool = False) -> dict:
@@ -1041,11 +1176,24 @@ def coerce_segments(value: str, ptype: str) -> list:
             d["type"] = "daterange" if d["type"] == "date" else d["type"]
         return [["‣", [["d", d]]]]
     if ptype == "person":
+        users = unique_names(load_id_cache().get("users", {}))
         segs = []
         for v in value.split(","):
             v = v.strip().replace("user://", "")
-            if v:
-                segs.append(["‣", [["u", dash(v)]]])
+            if v.startswith("@"):
+                v = v[1:]
+            if not v:
+                continue
+            compact = v.replace("-", "").lower()
+            if re.fullmatch(r"[0-9a-f]{32}", compact):
+                segs.append(["‣", [["u", dash(compact)]]])
+                continue
+            uid = users.get(v.lower())
+            if not uid:
+                raise click.ClickException(
+                    f"unknown person {v!r}; pass a uuid or a unique cached name (run `users` first)"
+                )
+            segs.append(["‣", [["u", uid]]])
         return segs
     if ptype == "relation":
         segs = []
@@ -1297,7 +1445,8 @@ def whoami():
 @click.option("--depth", default=6, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--raw", is_flag=True, help="raw record JSON (expensive; debugging)")
-def page(ref, props_only, no_props, depth, as_json, raw):
+@click.option("--write", "writeable", is_flag=True, help="emit @user(uuid)/@page(uuid) for write-back")
+def page(ref, props_only, no_props, depth, as_json, raw, writeable):
     """Render a page: flattened properties + body as compact markdown."""
     api = api_or_die()
     pid = parse_id(ref)
@@ -1320,7 +1469,7 @@ def page(ref, props_only, no_props, depth, as_json, raw):
     title = seg_plain(blk.get("properties", {}).get("title"))
     if title:
         cache_names("pages", {pid: title})
-    body = None if props_only else render_page_body(api, pid, depth)
+    body = None if props_only else render_page_body(api, pid, depth, writeable=writeable)
     if as_json:
         if body is not None:
             flat["body"] = body
@@ -1746,14 +1895,20 @@ def _parse_prop_args(props: tuple[str, ...]) -> dict[str, str]:
 @click.option("--md", "md_file", help="markdown body file ('-' = stdin; appended after --template)")
 @click.option("--body", help="markdown body inline (appended after --template)")
 @click.option("--icon", help="emoji icon")
-def create(parent_ref, props, template, md_file, body, icon):
+@click.option("--jsonl", "jsonl_file", help="create many rows from a JSONL file ('-' = stdin)")
+def create(parent_ref, props, template, md_file, body, icon, jsonl_file):
     """Create a row in a database (schema-coerced props) or a child page.
 
     --template clones a database template's body synchronously into the same
     create transaction (no async placeholder race, unlike the API's template
     instantiation); --md/--body then appends beneath the cloned body.
+    --jsonl creates many rows; each line is a JSON object of properties plus
+    optional md/body/icon keys.
     """
     api = api_or_die()
+    if jsonl_file:
+        _create_jsonl(api, parent_ref, jsonl_file)
+        return
     kv = _parse_prop_args(props)
     new_id = str(uuidlib.uuid4())
     record: dict[str, Any] = {
@@ -1794,6 +1949,71 @@ def create(parent_ref, props, template, md_file, body, icon):
         ops += child_ops
     api.transact(ops)
     click.echo(f"created {page_url(new_id)}" + (f" (from template {tpl_title!r})" if tpl_title else ""))
+
+
+def _create_one(api: Api, parent_ref: str, kv: dict[str, str], *, template: str | None = None, md: str | None = None, icon: str | None = None) -> str:
+    new_id = str(uuidlib.uuid4())
+    record: dict[str, Any] = {
+        "id": new_id, "type": "page", "alive": True, "space_id": api.space_id,
+        "version": 1, "created_time": now_ms(), "last_edited_time": now_ms(), "properties": {},
+    }
+    ops: list[dict] = []
+    coll = None
+    try:
+        coll, _ = resolve_collection(api, parent_ref)
+        sch = schema_by_name(coll)
+        record["parent_id"], record["parent_table"] = coll["id"], "collection"
+        for name, val in kv.items():
+            if name not in sch:
+                raise click.ClickException(f"unknown property {name!r}; known: {', '.join(sorted(sch))}")
+            pid_, ptype = sch[name]
+            record["properties"][pid_] = coerce_segments(val, ptype)
+    except click.ClickException as e:
+        if "unknown property" in str(e):
+            raise
+        if template:
+            raise click.ClickException("--template only applies when creating in a database")
+        ppid = parse_id(parent_ref)
+        record["parent_id"], record["parent_table"] = ppid, "block"
+        record["properties"]["title"] = md_to_segments(kv.get("Title") or kv.get("title") or "Untitled")
+        ops.append(op("block", ppid, ["content"], "listAfter", {"id": new_id}, api.space_id))
+    if icon:
+        record["format"] = {"page_icon": icon}
+    ops.insert(0, op("block", new_id, [], "set", record, api.space_id))
+    if template:
+        tpl_ops, _ = clone_template_ops(api, coll, template, new_id)
+        ops += tpl_ops
+    if md:
+        child_ops, _ = blocks_to_ops(api, md_to_v3_blocks(md), new_id)
+        ops += child_ops
+    api.transact(ops)
+    return new_id
+
+
+def _create_jsonl(api: Api, parent_ref: str, jsonl_file: str) -> None:
+    raw = sys.stdin.read() if jsonl_file == "-" else Path(jsonl_file).read_text()
+    n = 0
+    for i, line in enumerate(raw.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise click.ClickException(f"jsonl line {i}: {e}") from e
+        if not isinstance(row, dict):
+            raise click.ClickException(f"jsonl line {i}: expected object")
+        md = row.pop("md", None) or row.pop("body", None)
+        if md and isinstance(md, str) and md.endswith(".md") and Path(md).exists():
+            md = Path(md).read_text()
+        icon = row.pop("icon", None)
+        template = row.pop("template", None)
+        kv = {str(k): "" if v is None else str(v) for k, v in row.items()}
+        new_id = _create_one(api, parent_ref, kv, template=template, md=md, icon=icon)
+        click.echo(f"created {page_url(new_id)}")
+        n += 1
+    if not n:
+        raise click.ClickException("jsonl contained no rows")
 
 
 @cli.command(name="templates")
@@ -1843,12 +2063,43 @@ def update(page_ref, props, archive, icon):
     click.echo(f"updated {page_url(pid)}")
 
 
+def _replace_section(api: Api, pid: str, heading: str, md: str) -> None:
+    tables = api.load_page(pid)
+    blks = tables.get("block", {})
+    root = blks.get(pid, {})
+    hid, parent, kids = find_section(list(root.get("content") or []), blks, heading)
+    if not hid:
+        preview = "\n".join(render_page_body(api, pid, 3).splitlines()[:40])
+        raise click.ClickException(f"no heading matching {heading!r}\n---\n{preview}")
+    parent_id = pid if parent == "page" else parent
+    keep = {"collection_view", "collection_view_page", "copy_indicator"}
+    ops: list[dict] = []
+    for cid in kids:
+        c = blks.get(cid) or {}
+        if c.get("type") in keep:
+            continue
+        ops.append(op("block", cid, [], "update", {"alive": False}, api.space_id))
+        ops.append(op("block", parent_id, ["content"], "listRemove", {"id": cid}, api.space_id))
+    child_ops, top = blocks_to_ops(api, md_to_v3_blocks(md), parent_id)
+    # blocks_to_ops appends at the end; move new top-level blocks after the heading.
+    for bid in reversed(top):
+        child_ops.append(op("block", parent_id, ["content"], "listRemove", {"id": bid}, api.space_id))
+        child_ops.append(op("block", parent_id, ["content"], "listAfter", {"id": bid, "after": hid}, api.space_id))
+    ops += child_ops
+    ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    api.transact(ops)
+    click.echo(f"replaced section {heading!r} ({len(top)} block(s))")
+
+
 @cli.command()
 @click.argument("page_ref")
-@click.argument("old")
-@click.argument("new")
+@click.argument("old", required=False)
+@click.argument("new", required=False)
 @click.option("--all", "replace_all", is_flag=True, help="replace every match (default: must be unique)")
-def edit(page_ref, old, new, replace_all):
+@click.option("--section", "section", help="replace the body under this heading")
+@click.option("--md", "md_file", help="markdown for --section ('-' = stdin)")
+@click.option("--body", help="inline markdown for --section")
+def edit(page_ref, old, new, replace_all, section, md_file, body):
     """Search-and-replace text inside a page's blocks.
 
     Replacement happens inside individual text segments so formatting and
@@ -1858,31 +2109,42 @@ def edit(page_ref, old, new, replace_all):
     All block properties are searched, not just `title` — so table cells
     match. If `old` is a snippet of the table as `page` renders it (GFM),
     the table is rewritten (insert/delete/update rows) to match `new`.
+    Mentions match as `page` renders them (`@Ada`). Prefer --section over
+    guessing the current paragraph; on no match, edit prints a short preview.
     """
     api = api_or_die()
     pid = parse_id(page_ref)
+    if section:
+        _replace_section(api, pid, section, _read_md(md_file, body))
+        return
+    if old is None or new is None:
+        raise click.ClickException("edit needs OLD NEW, or --section with --md/--body")
     tables = api.load_page(pid)
     blks = tables.get("block", {})
-    hits, spanning = property_text_matches(blks, old)
+    names = _name_map(tables)
+    hits, whole, spanning = property_text_matches(blks, old, names=names)
     if spanning:
         ids = [bid for bid, _ in spanning]
         raise click.ClickException(f"match spans formatting boundaries in block(s) {', '.join(ids)} — narrow the string (see `blocks`)")
-    if hits:
-        if len(hits) > 1 and not replace_all:
-            for bid, key in hits:
+    targets = hits + whole
+    if targets:
+        if len(targets) > 1 and not replace_all:
+            for bid, key in targets:
                 click.echo(f"match in {bid} ({blks[bid]['type']}.{key})", err=True)
-            raise click.ClickException(f"{len(hits)} matches — pass --all or narrow the string")
+            raise click.ClickException(f"{len(targets)} matches — pass --all or narrow the string")
         ops = []
-        for bid, key in hits:
+        for bid, key in targets:
             segs = blks[bid]["properties"][key]
-            new_segs = [[seg[0].replace(old, new), *seg[1:]] if seg and seg[0] not in ("‣", "⁍") else seg for seg in segs]
+            if (bid, key) in whole:
+                new_segs = md_to_segments(new)
+            else:
+                new_segs = [[seg[0].replace(old, new), *seg[1:]] if seg and seg[0] not in ("‣", "⁍") else seg for seg in segs]
             ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
         api.transact(ops)
-        click.echo(f"replaced in {len(hits)} block(s)")
+        click.echo(f"replaced in {len(targets)} block(s)")
         return
 
-    names = _name_map(tables)
     table_hits: list[tuple[str, dict, str, int]] = []
     for bid, b in blks.items():
         if b.get("type") != "table" or not b.get("alive", True):
@@ -1892,7 +2154,8 @@ def edit(page_ref, old, new, replace_all):
         if n:
             table_hits.append((bid, b, rendered, n))
     if not table_hits:
-        raise click.ClickException("no match")
+        preview = "\n".join(render_page_body(api, pid, 3).splitlines()[:40])
+        raise click.ClickException(f"no match\n---\n{preview}")
     total = sum(n for *_, n in table_hits)
     if total > 1 and not replace_all:
         for bid, b, _, n in table_hits:
@@ -1909,18 +2172,64 @@ def edit(page_ref, old, new, replace_all):
     click.echo(f"replaced table markdown in {n_tables} table(s)")
 
 
-@cli.command(name="delete-block")
-@click.argument("block_ref")
-def delete_block(block_ref):
-    """Remove a block (alive=false + detach from its parent's content)."""
+@cli.command()
+@click.argument("page_ref")
+@click.option("--md", "md_file", help="markdown file ('-' = stdin)")
+@click.option("--body", help="inline markdown")
+@click.option("--force", is_flag=True, help="also remove collection embeds")
+def rewrite(page_ref, md_file, body, force):
+    """Replace a page's body with markdown. Keeps the page and its properties."""
     api = api_or_die()
+    pid = parse_id(page_ref)
+    md = _read_md(md_file, body)
+    tables = api.load_page(pid)
+    blks = tables.get("block", {})
+    root = blks.get(pid, {})
+    keep = set() if force else {"collection_view", "collection_view_page", "copy_indicator"}
+    ops: list[dict] = []
+    for cid in list(root.get("content") or []):
+        c = blks.get(cid) or {}
+        if c.get("type") in keep:
+            continue
+        ops.append(op("block", cid, [], "update", {"alive": False}, api.space_id))
+        ops.append(op("block", pid, ["content"], "listRemove", {"id": cid}, api.space_id))
+    child_ops, top = blocks_to_ops(api, md_to_v3_blocks(md), pid)
+    ops += child_ops
+    ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    api.transact(ops)
+    click.echo(f"rewrote {page_url(pid)} ({len(top)} block(s))")
+
+
+def trash_block(api: Api, block_ref: str) -> str:
+    """Regular user delete: move to trash. Never permanently deletes."""
     bid = parse_id(block_ref)
     b = api.block(bid)
-    ops = [op("block", bid, [], "update", {"alive": False}, api.space_id)]
+    ops = [
+        op("block", bid, [], "update", {"alive": False}, api.space_id),
+        op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id),
+    ]
     if b.get("parent_table") == "block":
         ops.append(op("block", b["parent_id"], ["content"], "listRemove", {"id": bid}, api.space_id))
     api.transact(ops)
-    click.echo("deleted")
+    return bid
+
+
+@cli.command()
+@click.argument("page_ref")
+def delete(page_ref):
+    """Move a page to trash (regular delete). Recoverable. Never hard-deletes."""
+    api = api_or_die()
+    bid = trash_block(api, page_ref)
+    click.echo(f"trashed {page_url(bid)}")
+
+
+@cli.command(name="delete-block")
+@click.argument("block_ref")
+def delete_block(block_ref):
+    """Move a block to trash (alive=false + detach). Recoverable. Never hard-deletes."""
+    api = api_or_die()
+    trash_block(api, block_ref)
+    click.echo("trashed")
 
 
 @cli.command()

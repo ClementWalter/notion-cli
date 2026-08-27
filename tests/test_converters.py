@@ -26,9 +26,13 @@ from notion_cli import (  # noqa: E402
     md_to_v3_blocks,
     merge_id_cache,
     parse_gfm_table,
+    find_section,
     parse_id,
     property_text_matches,
+    refuse_hard_delete,
+    rewrite_named_mentions,
     save_id_cache,
+    unique_names,
     seg_plain,
     seg_to_md,
     split_gfm_row,
@@ -250,7 +254,8 @@ def test_property_text_matches_table_cells_not_just_title():
             "properties": {"]NN<": [["2,680,000", [["b"]]]]},
         }
     }
-    hits, spanning = property_text_matches(blks, "2,680,000")
+    hits, whole, spanning = property_text_matches(blks, "2,680,000")
+    assert whole == []
     assert hits == [("row", "]NN<")]
     assert spanning == []
 
@@ -312,6 +317,20 @@ def test_coerce_date_range():
 
 def test_coerce_person_from_user_url():
     assert coerce_segments(f"user://{USER}", "person") == [["‣", [["u", USER]]]]
+
+
+def test_coerce_person_from_cached_name(monkeypatch):
+    monkeypatch.setattr(
+        notion_cli, "load_id_cache", lambda: {"users": {USER: "Ada Lovelace"}, "pages": {}}
+    )
+    assert coerce_segments("Ada Lovelace", "person") == [["‣", [["u", USER]]]]
+    assert coerce_segments("@Ada Lovelace", "person") == [["‣", [["u", USER]]]]
+
+
+def test_coerce_person_unknown_name_errors(monkeypatch):
+    monkeypatch.setattr(notion_cli, "load_id_cache", lambda: {"users": {}, "pages": {}})
+    with pytest.raises(Exception, match="unknown person"):
+        coerce_segments("Ada Lovelace", "person")
 
 
 def test_coerce_relation_from_url():
@@ -465,3 +484,90 @@ def test_load_id_cache_recovers_from_corrupt_file(tmp_path, monkeypatch):
     path.write_text("not json")
     monkeypatch.setattr(notion_cli, "ID_NAMES_PATH", path)
     assert load_id_cache() == {"users": {}, "pages": {}}
+
+
+def test_unique_names_drops_collisions():
+    assert unique_names({USER: "Ada", UUID: "Ada", "aa": "Bob"}) == {"bob": "aa"}
+
+
+def test_rewrite_named_mentions_longest_wins():
+    users = {"ada": USER, "ada lovelace": USER}
+    assert rewrite_named_mentions("hi @Ada Lovelace", users) == f"hi @user({USER})"
+
+
+def test_rewrite_named_mentions_leaves_explicit_user():
+    users = {"ada": USER}
+    assert rewrite_named_mentions(f"@user({USER})", users) == f"@user({USER})"
+
+
+def test_md_to_segments_named_mention(monkeypatch):
+    monkeypatch.setattr(
+        notion_cli, "load_id_cache", lambda: {"users": {USER: "Ada Lovelace"}, "pages": {}}
+    )
+    assert md_to_segments("ping @Ada Lovelace") == [["ping "], ["‣", [["u", USER]]]]
+
+
+def test_seg_to_md_writeable_roundtrip():
+    segs = [["‣", [["u", USER]]], [" and "], ["‣", [["p", UUID]]]]
+    md = seg_to_md(segs, writeable=True)
+    assert md == f"@user({USER}) and @page({UUID})"
+
+
+def test_property_text_matches_rendered_mention_as_whole():
+    blks = {
+        "b1": {
+            "alive": True,
+            "properties": {"title": [["‣", [["u", USER]]]]},
+        }
+    }
+    hits, whole, spanning = property_text_matches(blks, "@Ada", names={USER: "Ada"})
+    assert hits == []
+    assert whole == [("b1", "title")]
+    assert spanning == []
+
+
+def test_find_section_stops_at_same_level():
+    blocks = {
+        "a": {"type": "header", "alive": True, "properties": {"title": [["1. What"]]}},
+        "b": {"type": "text", "alive": True, "properties": {"title": [["old"]]}},
+        "c": {"type": "header", "alive": True, "properties": {"title": [["2. Crew"]]}},
+    }
+    hid, parent, kids = find_section(["a", "b", "c"], blocks, "1. What")
+    assert hid == "a"
+    assert parent == "page"
+    assert kids == ["b"]
+
+
+def test_find_section_nested_heading_uses_parent():
+    blocks = {
+        "links": {"type": "sub_header", "alive": True, "properties": {"title": [["4. Links"]]}, "content": ["lin", "b1", "gh"]},
+        "lin": {"type": "sub_sub_header", "alive": True, "properties": {"title": [["Linear"]]}},
+        "b1": {"type": "bulleted_list", "alive": True, "properties": {"title": [["old"]]}},
+        "gh": {"type": "sub_sub_header", "alive": True, "properties": {"title": [["GitHub"]]}},
+    }
+    hid, parent, kids = find_section(["links"], blocks, "Linear")
+    assert hid == "lin"
+    assert parent == "links"
+    assert kids == ["b1"]
+
+
+def test_refuse_hard_delete_path():
+    with pytest.raises(Exception, match="hard delete"):
+        refuse_hard_delete("deleteBlocks", {})
+
+
+def test_refuse_hard_delete_body():
+    with pytest.raises(Exception, match="hard delete"):
+        refuse_hard_delete("saveTransactionsFanout", {"permanentlyDelete": True})
+
+
+def test_refuse_hard_delete_nested():
+    with pytest.raises(Exception, match="hard delete"):
+        refuse_hard_delete(
+            "saveTransactionsFanout",
+            {"transactions": [{"operations": [{"permanently_deleted_time": 1}]}]},
+        )
+
+
+def test_refuse_hard_delete_allows_trash():
+    refuse_hard_delete("saveTransactionsFanout", {"operations": [{"alive": False}]})
