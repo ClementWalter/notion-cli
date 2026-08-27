@@ -688,3 +688,141 @@ def test_ancestry_invalidation_stops_at_the_page_boundary(body_cache, monkeypatc
     monkeypatch.setattr(notion_cli.Api, "records", lambda self, table, ids: {i: parents[i] for i in ids})
     notion_cli.invalidate_block_ancestry(api, "page", parents["page"])
     assert body_cache.cached_body("coll", 6, False, SETTLED) == "# the database, not the page"
+
+
+# --------------------------------------------------------------------------
+# rate-limit pacing
+# --------------------------------------------------------------------------
+
+
+def test_a_fresh_bucket_does_not_delay_the_first_call():
+    assert notion_cli.TokenBucket(32, 0.3).take() == 0.0
+
+
+def test_a_fresh_bucket_does_not_delay_a_burst_within_capacity():
+    bucket = notion_cli.TokenBucket(4, 0.3)
+    assert [bucket.take() for _ in range(4)] == [0.0] * 4
+
+
+def test_exhausting_the_bucket_delays_the_next_call_by_the_refill_time():
+    bucket = notion_cli.TokenBucket(1, 2.0)  # 0.5s per token
+    bucket.take()
+    assert bucket.take() == pytest.approx(0.5, abs=0.05)
+
+
+def test_a_drained_bucket_delays_even_when_it_was_never_used():
+    bucket = notion_cli.TokenBucket(4, 2.0)
+    bucket.drain()
+    assert bucket.take() == pytest.approx(0.5, abs=0.05)
+
+
+def test_the_bucket_refills_over_time():
+    bucket = notion_cli.TokenBucket(4, 100.0)  # refills instantly
+    for _ in range(4):
+        bucket.take()
+    time.sleep(0.05)
+    assert bucket.take() == 0.0
+
+
+def test_the_bucket_never_refills_past_its_capacity():
+    bucket = notion_cli.TokenBucket(2, 1000.0)
+    time.sleep(0.01)  # would accrue thousands of tokens if uncapped
+    bucket.take()
+    bucket.take()
+    assert bucket.take() > 0
+
+
+def test_only_the_rate_limited_endpoints_are_paced():
+    assert "loadPageChunk" in notion_cli.THROTTLED_PATHS
+    assert "syncRecordValues" not in notion_cli.THROTTLED_PATHS
+
+
+class _StubResponse:
+    """Minimal stand-in for a requests.Response in the retry path."""
+
+    def __init__(self, status_code, headers=None, payload=None):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._payload = payload if payload is not None else {}
+        self.text = ""
+
+    @property
+    def ok(self):
+        return self.status_code < 400
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def retrying_api(monkeypatch):
+    """An Api whose transport replays a queued list of responses, with sleeps
+    recorded instead of taken. Its bucket refills instantly so that `slept`
+    holds only the retry backoff, not pacing — pacing is tested separately.
+    """
+    api = notion_cli.Api.__new__(notion_cli.Api)
+    api.space_id = "space"
+    api.bucket = notion_cli.TokenBucket(32, 1e9)
+    slept = []
+    monkeypatch.setattr(notion_cli.time, "sleep", slept.append)
+    api.slept = slept
+    return api
+
+
+def _queue(api, monkeypatch, responses):
+    it = iter(responses)
+    api.s = type("S", (), {"post": staticmethod(lambda *a, **k: next(it))})()
+
+
+def test_a_positive_retry_after_is_honored_exactly(retrying_api, monkeypatch):
+    _queue(retrying_api, monkeypatch, [
+        _StubResponse(429, {"Retry-After": "5"}),
+        _StubResponse(200, payload={"ok": True}),
+    ])
+    retrying_api.post("loadPageChunk", {})
+    assert retrying_api.slept == [5.0]
+
+
+def test_a_retry_after_of_zero_falls_back_to_the_floor(retrying_api, monkeypatch):
+    _queue(retrying_api, monkeypatch, [
+        _StubResponse(429, {"Retry-After": "0"}),
+        _StubResponse(200, payload={"ok": True}),
+    ])
+    retrying_api.post("loadPageChunk", {})
+    assert retrying_api.slept == [8]
+
+
+def test_a_missing_retry_after_falls_back_to_the_floor(retrying_api, monkeypatch):
+    _queue(retrying_api, monkeypatch, [
+        _StubResponse(429),
+        _StubResponse(200, payload={"ok": True}),
+    ])
+    retrying_api.post("loadPageChunk", {})
+    assert retrying_api.slept == [8]
+
+
+def test_the_floor_escalates_across_successive_retries(retrying_api, monkeypatch):
+    _queue(retrying_api, monkeypatch, [
+        _StubResponse(429), _StubResponse(429), _StubResponse(429),
+        _StubResponse(200, payload={"ok": True}),
+    ])
+    retrying_api.post("loadPageChunk", {})
+    assert retrying_api.slept == [8, 16, 32]
+
+
+def test_a_429_drains_the_burst_allowance(retrying_api, monkeypatch):
+    retrying_api.bucket = notion_cli.TokenBucket(32, 2.0)  # 0.5s per token
+    _queue(retrying_api, monkeypatch, [
+        _StubResponse(429, {"Retry-After": "60"}),
+        _StubResponse(200, payload={"ok": True}),
+    ])
+    retrying_api.post("loadPageChunk", {})
+    # the 60s penalty, then the retry paced from an emptied bucket
+    assert retrying_api.slept == [60.0, pytest.approx(0.5, abs=0.05)]
+
+
+def test_an_unthrottled_endpoint_is_never_paced(retrying_api, monkeypatch):
+    retrying_api.bucket.drain()
+    _queue(retrying_api, monkeypatch, [_StubResponse(200, payload={"ok": True})])
+    retrying_api.post("syncRecordValues", {})
+    assert retrying_api.slept == []
