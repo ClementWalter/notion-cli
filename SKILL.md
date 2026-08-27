@@ -204,6 +204,13 @@ notion rewrite <page> --md body.md   # replace the whole page body (keeps proper
 notion create --parent <db> --jsonl rows.jsonl
 
 notion comment <page> "done — see @page(<id>)"
+
+# Toggle one to-do's checkbox without touching content or recreating the
+# block (unlike --section/table-md, which rewrite everything in scope).
+# Find the block id via `blocks <page>`.
+notion check <block_id>              # tick
+notion check <block_id> --uncheck    # clear
+
 notion delete <page>                 # trash only — recoverable
 notion delete-block <block_id>
 ```
