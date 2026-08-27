@@ -641,6 +641,7 @@ _LINK_PROVIDERS: tuple[tuple[str, str, str, str], ...] = (
     ("figma.com", "", "Figma", "https://static.figma.com/app/icon/1/favicon.png"),
     ("dune.com", "", "Dune", "https://dune.com/assets/apple-touch-icon.png"),
     ("etherscan.io", "", "Etherscan", "https://etherscan.io/favicon.ico"),
+    ("defillama.com", "", "DefiLlama", "https://defillama.com/favicon.ico"),
 )
 
 
