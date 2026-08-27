@@ -202,7 +202,8 @@ notion update <page> --archive
 
 # Append markdown (headings, - / 1. lists, - [ ] todos, > quotes,
 # > [!💸:blue_bg] callouts, ``` fences, | tables |, --- dividers;
-# inline: **bold**, `code`, [label](url), @user(uuid), @page(uuid-or-url))
+# inline: **bold**, `code`, [label](url), @user(uuid), @page(uuid-or-url),
+#         @[label](url) = link-mention chip, @[label](url "Provider") to override)
 # A GFM table on a page that already has one table with the same columns is
 # merged into it (new rows go above a trailing "Running total" row).
 notion append <page> "one liner"
@@ -246,6 +247,13 @@ notion delete-block <block_id>
 - Reference Notion pages inside bodies with `@page(<id>)` (renders as a real
   mention card) and people with `@user(<uuid>)` — never plain-text names or
   bare notion.so links.
+- Reference anything **outside** Notion with `@[label](url)` — the link-mention
+  chip a human sees as `<icon> Provider Label`, not a raw URL. Provider and icon
+  are derived from the host (Linear, Google Docs/Sheets/Slides, Drive, Slack,
+  GitHub, Figma, Dune, Etherscan); an unknown host keeps the label and drops the
+  icon, which renders as Notion's own chain glyph. `@[label](url "Provider")`
+  overrides the provider. A Notion URL is the one exception: use `@page(<id>)`,
+  which tracks the page's live title and icon.
 - New tracker-style rows: TL;DR callout (`> [!💸:blue_bg] …`) + `## Why` +
   `## What` todos + `## Sources`.
 - Rewrite, don't stack: prefer `edit --section` (or search-replace) over
@@ -254,7 +262,9 @@ notion delete-block <block_id>
 - `@user(uuid)` / `@page(id)` always write mentions. After any
   `page`/`query`/`users` call, unique cached display names also work
   (`@Clement Walter`, `--prop 'Owner=Clement Walter'`). `page --write`
-  emits the uuid form if you need a guaranteed round-trip.
+  emits the uuid form if you need a guaranteed round-trip — and `@[label](url)`
+  for link mentions, which a plain `page` renders as `[label](url)` so a digest
+  reads cleanly.
 
 ## Gotchas
 

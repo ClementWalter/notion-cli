@@ -134,6 +134,84 @@ def test_md_seg_roundtrip_plain():
     assert seg_to_md(md_to_segments("plain words")) == "plain words"
 
 
+# ---- link mentions -------------------------------------------------------------
+
+LINEAR_URL = "https://linear.app/zama/issue/SDK-285/add-polygon"
+LM = ["‣", [["lm", {"href": LINEAR_URL, "title": "SDK-285", "link_provider": "Linear",
+                    "icon_url": "https://linear.app/favicon.ico"}]]]
+
+
+def test_link_provider_known_host():
+    assert notion_cli.link_provider(LINEAR_URL)[0] == "Linear"
+
+
+def test_link_provider_gdoc_beats_bare_docs_host():
+    got = notion_cli.link_provider("https://docs.google.com/document/d/abc/edit")
+    assert got[0] == "Google Docs"
+
+
+def test_link_provider_gsheet_by_path():
+    got = notion_cli.link_provider("https://docs.google.com/spreadsheets/d/abc/edit")
+    assert got[0] == "Google Sheets"
+
+
+def test_link_provider_slack_subdomain():
+    assert notion_cli.link_provider("https://zama-ai.slack.com/archives/C1/p1")[0] == "Slack"
+
+
+def test_link_provider_unknown_host_has_no_icon():
+    assert notion_cli.link_provider("https://app.morpho.org/vaults")[1] == ""
+
+
+def test_link_provider_unknown_host_labels_from_domain():
+    assert notion_cli.link_provider("https://app.morpho.org/vaults")[0] == "Morpho"
+
+
+def test_link_mention_segment_carries_icon():
+    seg = notion_cli.link_mention_segment(LINEAR_URL, "SDK-285")
+    assert seg[1][0][1]["icon_url"] == "https://linear.app/favicon.ico"
+
+
+def test_link_mention_segment_falls_back_to_last_path_element():
+    seg = notion_cli.link_mention_segment(LINEAR_URL, "")
+    assert seg[1][0][1]["title"] == "add-polygon"
+
+
+def test_link_mention_segment_explicit_provider_wins():
+    seg = notion_cli.link_mention_segment(LINEAR_URL, "SDK-285", "Engineering")
+    assert seg[1][0][1]["link_provider"] == "Engineering"
+
+
+def test_link_mention_segment_omits_icon_for_unknown_host():
+    seg = notion_cli.link_mention_segment("https://app.morpho.org/vaults", "Vaults")
+    assert "icon_url" not in seg[1][0][1]
+
+
+def test_md_seg_link_mention():
+    assert md_to_segments(f"@[SDK-285]({LINEAR_URL})") == [LM]
+
+
+def test_md_seg_link_mention_with_explicit_provider():
+    got = md_to_segments(f'@[SDK-285]({LINEAR_URL} "Eng")')
+    assert got[0][1][0][1]["link_provider"] == "Eng"
+
+
+def test_md_seg_plain_link_is_not_a_mention():
+    assert md_to_segments(f"[SDK-285]({LINEAR_URL})") == [["SDK-285", [["a", LINEAR_URL]]]]
+
+
+def test_seg_link_mention_renders_as_markdown_link():
+    assert seg_to_md([LM]) == f"[SDK-285]({LINEAR_URL})"
+
+
+def test_seg_link_mention_writeable_roundtrips():
+    assert md_to_segments(seg_to_md([LM], writeable=True)) == [LM]
+
+
+def test_seg_link_mention_without_title_renders_bare_url():
+    assert seg_to_md([["‣", [["lm", {"href": LINEAR_URL}]]]]) == f"<{LINEAR_URL}>"
+
+
 # ---- markdown -> v3 blocks -----------------------------------------------------
 
 
