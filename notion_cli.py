@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import stat
 import sys
 import time
@@ -46,6 +47,15 @@ API_BASE = "https://www.notion.so/api/v3"
 CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
 LEGACY_TOKEN_PATH = Path.home() / ".config" / "notion-reader" / "config.json"
 ID_NAMES_PATH = Path.home() / ".config" / "notion-cli" / "cache" / "id_names.json"
+BODY_CACHE_PATH = Path.home() / ".config" / "notion-cli" / "cache" / "bodies.sqlite3"
+# Backstop only: correctness rests on the last_edited_time check below, this
+# just stops a body whose invalidation signal was somehow missed living forever.
+BODY_CACHE_MAX_AGE_S = 30 * 86400
+# A page's last_edited_time is bumped when a descendant block changes, but the
+# bump can land up to ~20s BEFORE the descendant's own final timestamp — so a
+# body rendered mid-edit could be stored under a page stamp that never moves
+# again. Refuse to cache a page edited more recently than this.
+BODY_CACHE_SETTLE_S = 120
 
 
 # --------------------------------------------------------------------------
@@ -117,6 +127,132 @@ def cache_names(kind: str, mapping: dict[str, str]) -> None:
     cache = load_id_cache()
     if merge_id_cache(cache, kind, mapping):
         save_id_cache(cache)
+
+
+# --------------------------------------------------------------------------
+# rendered-body cache
+#
+# `loadPageChunk` is the CLI's most rate-limited endpoint (Notion answers a
+# burst with 429 + Retry-After ~60s), and it's the per-page cost that makes
+# `query --with-body` over hundreds of rows unusable. Rendered bodies are
+# therefore memoized in sqlite, keyed by the render parameters that change the
+# output and validated against the page's `last_edited_time`.
+#
+# The validator is free: every caller already holds the page record (`page` and
+# `pages` fetch it via syncRecordValues, `query` gets it in the query's own
+# recordMap), so a hit costs zero extra requests. It is also sound rather than
+# a TTL guess — Notion bumps a page's last_edited_time when any descendant
+# block changes, so an edit anywhere in the body moves the key.
+#
+# sqlite rather than a JSON blob because bodies are large and written one row
+# at a time: rewriting a whole JSON file per page would be quadratic over a
+# 400-row query.
+# --------------------------------------------------------------------------
+
+_body_db: sqlite3.Connection | None = None
+
+
+def body_cache_db() -> sqlite3.Connection | None:
+    """Lazily-opened cache connection, or None when the cache is unavailable.
+
+    A broken or unwritable cache must never fail a read, so every failure
+    degrades to "no cache" instead of raising.
+    """
+    global _body_db
+    if os.environ.get("NOTION_CLI_NO_CACHE"):
+        return None
+    if _body_db is not None:
+        return _body_db
+    try:
+        BODY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(BODY_CACHE_PATH, timeout=5)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS bodies (
+                   page_id          TEXT NOT NULL,
+                   depth            INTEGER NOT NULL,
+                   writeable        INTEGER NOT NULL,
+                   last_edited_time INTEGER NOT NULL,
+                   cached_at        INTEGER NOT NULL,
+                   body             TEXT NOT NULL,
+                   PRIMARY KEY (page_id, depth, writeable))"""
+        )
+        conn.commit()
+    except (sqlite3.Error, OSError) as exc:
+        log.debug("body cache unavailable: %s", exc)
+        return None
+    _body_db = conn
+    return conn
+
+
+def cached_body(page_id: str, depth: int, writeable: bool, last_edited_time: int | None) -> str | None:
+    """A previously rendered body, iff it was rendered from this exact revision."""
+    conn = body_cache_db()
+    if conn is None or not last_edited_time:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT body, cached_at FROM bodies WHERE page_id=? AND depth=? AND writeable=? AND last_edited_time=?",
+            (page_id, depth, int(writeable), int(last_edited_time)),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        log.debug("body cache read failed: %s", exc)
+        return None
+    if row is None or time.time() - row[1] > BODY_CACHE_MAX_AGE_S:
+        return None
+    return row[0]
+
+
+def store_body(page_id: str, depth: int, writeable: bool, last_edited_time: int | None, body: str) -> None:
+    conn = body_cache_db()
+    if conn is None or not last_edited_time:
+        return
+    # An actively-edited page has no stable revision to key on — see
+    # BODY_CACHE_SETTLE_S.
+    if time.time() - last_edited_time / 1000 < BODY_CACHE_SETTLE_S:
+        return
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO bodies VALUES (?,?,?,?,?,?)",
+            (page_id, depth, int(writeable), int(last_edited_time), int(time.time()), body),
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.debug("body cache write failed: %s", exc)
+
+
+def invalidate_block_ancestry(api: "Api", block_id: str, record: dict | None = None) -> None:
+    """Invalidate the cached bodies of every page containing `block_id`.
+
+    A write aimed at a nested block leaves the containing page's cached body
+    keyed on a revision Notion will bump only server-side, and that bump can
+    lag the write by seconds — long enough for an immediate re-read to serve
+    the pre-write text. Walking `parent_id` up to the page closes that window.
+    Cheap: the hops go through syncRecordValues, not the rate-limited
+    loadPageChunk, and only ever on a write.
+    """
+    if body_cache_db() is None:
+        return
+    chain, cur, rec = [block_id], block_id, record
+    for _ in range(16):  # depth guard; real pages nest far shallower
+        if rec is None:
+            rec = api.records("block", [cur]).get(cur)
+        if not rec or rec.get("parent_table") != "block":
+            break
+        cur, rec = rec["parent_id"], None
+        chain.append(cur)
+    invalidate_bodies(chain)
+
+
+def invalidate_bodies(page_ids: list[str]) -> None:
+    """Drop cached bodies for these ids, whatever revision they were stored at."""
+    conn = body_cache_db()
+    if conn is None or not page_ids:
+        return
+    try:
+        conn.executemany("DELETE FROM bodies WHERE page_id=?", [(p,) for p in page_ids])
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.debug("body cache invalidation failed: %s", exc)
 
 
 def unique_names(id_to_name: dict[str, str]) -> dict[str, str]:
@@ -276,6 +412,7 @@ class Api:
     def transact(self, ops: list[dict]) -> None:
         # the classic submitTransaction endpoint is gone; the current client
         # writes through saveTransactionsFanout (same transaction shape)
+        invalidate_bodies([o["pointer"]["id"] for o in ops if o.get("pointer", {}).get("id")])
         self.post(
             "saveTransactionsFanout",
             {
@@ -451,7 +588,25 @@ _HEADINGS = {"header": "#", "sub_header": "##", "sub_sub_header": "###"}
 _COLOR_TO_MD = re.compile(r"_background$")
 
 
-def render_page_body(api: Api, page_id: str, max_depth: int, *, writeable: bool = False) -> str:
+def render_page_body(
+    api: Api,
+    page_id: str,
+    max_depth: int,
+    *,
+    writeable: bool = False,
+    last_edited_time: int | None = None,
+    use_cache: bool = True,
+) -> str:
+    """Render a page's body as compact markdown.
+
+    Passing the page's `last_edited_time` (callers hold it already) enables the
+    rendered-body cache, turning a repeat read into zero API calls.
+    """
+    if use_cache:
+        hit = cached_body(page_id, max_depth, writeable, last_edited_time)
+        if hit is not None:
+            log.debug("body cache hit %s", page_id)
+            return hit
     tables = api.load_page(page_id)
     blocks = tables.get("block", {})
     names = _name_map(tables)
@@ -474,7 +629,13 @@ def render_page_body(api: Api, page_id: str, max_depth: int, *, writeable: bool 
         cache_names("users", resolved)
     root = blocks.get(page_id, {})
     lines = _render_children(api, root.get("content", []), blocks, names, 0, max_depth, writeable=writeable)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip("\n")
+    if use_cache:
+        # Key on the revision the render actually saw, not the caller's stamp —
+        # they differ when the page changed between the two fetches.
+        stamp = root.get("last_edited_time") or last_edited_time
+        store_body(page_id, max_depth, writeable, stamp, body)
+    return body
 
 
 def _name_map(tables: dict) -> dict[str, str]:
@@ -1438,6 +1599,55 @@ def whoami():
     click.echo(f"{u.get('name', cfg['user_id'])} <{u.get('email', '?')}> — space {cfg.get('space_name')} ({cfg.get('space_id')})")
 
 
+@cli.group("cache")
+def cache_cmd():
+    """Inspect or clear the rendered-body cache.
+
+    Bodies are keyed by the page revision they were rendered from, so a stale
+    entry can't be served — clearing is only ever needed to reclaim disk."""
+
+
+@cache_cmd.command("stats")
+def cache_stats():
+    """Entry count, page count and on-disk size."""
+    if os.environ.get("NOTION_CLI_NO_CACHE"):
+        click.echo("cache disabled (NOTION_CLI_NO_CACHE is set)")
+        return
+    conn = body_cache_db()
+    if conn is None:
+        click.echo("cache unavailable")
+        return
+    entries, pages_, oldest = conn.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT page_id), MIN(cached_at) FROM bodies"
+    ).fetchone()
+    size = BODY_CACHE_PATH.stat().st_size if BODY_CACHE_PATH.exists() else 0
+    click.echo(f"path: {BODY_CACHE_PATH}")
+    click.echo(f"entries: {entries} ({pages_} pages)")
+    click.echo(f"size: {size / 1024:.1f} KiB")
+    if oldest:
+        click.echo(f"oldest entry: {(time.time() - oldest) / 3600:.1f}h old")
+
+
+@cache_cmd.command("clear")
+@click.argument("refs", nargs=-1)
+def cache_clear(refs):
+    """Drop cached bodies — for the given pages, or all of them."""
+    conn = body_cache_db()
+    if conn is None:
+        click.echo("cache unavailable")
+        return
+    if refs:
+        ids = [parse_id(r) for r in refs]
+        invalidate_bodies(ids)
+        click.echo(f"cleared {len(ids)} page(s)")
+        return
+    n_ = conn.execute("SELECT COUNT(*) FROM bodies").fetchone()[0]
+    conn.execute("DELETE FROM bodies")
+    conn.execute("VACUUM")
+    conn.commit()
+    click.echo(f"cleared {n_} entries")
+
+
 @cli.command()
 @click.argument("ref")
 @click.option("--props-only", is_flag=True, help="skip the body (cheapest read)")
@@ -1446,7 +1656,8 @@ def whoami():
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--raw", is_flag=True, help="raw record JSON (expensive; debugging)")
 @click.option("--write", "writeable", is_flag=True, help="emit @user(uuid)/@page(uuid) for write-back")
-def page(ref, props_only, no_props, depth, as_json, raw, writeable):
+@click.option("--no-cache", is_flag=True, help="re-render the body even if a cached copy matches this revision")
+def page(ref, props_only, no_props, depth, as_json, raw, writeable, no_cache):
     """Render a page: flattened properties + body as compact markdown."""
     api = api_or_die()
     pid = parse_id(ref)
@@ -1469,7 +1680,10 @@ def page(ref, props_only, no_props, depth, as_json, raw, writeable):
     title = seg_plain(blk.get("properties", {}).get("title"))
     if title:
         cache_names("pages", {pid: title})
-    body = None if props_only else render_page_body(api, pid, depth, writeable=writeable)
+    body = None if props_only else render_page_body(
+        api, pid, depth, writeable=writeable,
+        last_edited_time=blk.get("last_edited_time"), use_cache=not no_cache,
+    )
     if as_json:
         if body is not None:
             flat["body"] = body
@@ -1488,7 +1702,8 @@ def page(ref, props_only, no_props, depth, as_json, raw, writeable):
 @click.argument("ids", nargs=-1, required=True)
 @click.option("--depth", default=6, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
-def pages(ids, depth, as_json):
+@click.option("--no-cache", is_flag=True, help="re-render bodies even if cached copies match")
+def pages(ids, depth, as_json, no_cache):
     """Fetch multiple pages' bodies in one call — content only, no properties
     (like `page --no-props`, batched). For any already-known set of ids (from
     `search`, `resolve`, or elsewhere) that don't come from a single `query`
@@ -1498,10 +1713,14 @@ def pages(ids, depth, as_json):
     out = []
     for ref in ids:
         pid = parse_id(ref)
-        title = seg_plain(api.block(pid).get("properties", {}).get("title"))
+        blk = api.block(pid)
+        title = seg_plain(blk.get("properties", {}).get("title"))
         if title:
             cache_names("pages", {pid: title})
-        body = render_page_body(api, pid, depth)
+        body = render_page_body(
+            api, pid, depth,
+            last_edited_time=blk.get("last_edited_time"), use_cache=not no_cache,
+        )
         if as_json:
             out.append({"id": pid, "title": title, "body": body})
         else:
@@ -1522,8 +1741,9 @@ def pages(ids, depth, as_json):
 @click.option("--edited-after", help="only rows last-edited at/after this UTC date (client-side; also covers body-content edits — Notion propagates a child block's edit up to its page's own last_edited_time)")
 @click.option("--with-body", is_flag=True, help="also fetch and include each matched row's full page body (one call instead of one `page` call per row)")
 @click.option("--body-depth", default=6, show_default=True, help="nested-children recursion cap for --with-body")
+@click.option("--no-cache", is_flag=True, help="re-render bodies even if cached copies match this revision")
 @click.option("--json", "as_json", is_flag=True)
-def query(ref, select_, filters, sort_, limit, names, edited_after, with_body, body_depth, as_json):
+def query(ref, select_, filters, sort_, limit, names, edited_after, with_body, body_depth, no_cache, as_json):
     """Query a database; one compact line per row (filters applied client-side)."""
     api = api_or_die()
     coll, view_id = resolve_collection(api, ref)
@@ -1587,7 +1807,14 @@ def query(ref, select_, filters, sort_, limit, names, edited_after, with_body, b
     if limit:
         rows = rows[:limit]
     cols = [c.strip() for c in select_.split(",")] if select_ else None
-    bodies = {r["id"]: render_page_body(api, r["id"], body_depth) for r in rows} if with_body else {}
+    bodies = {
+        r["id"]: render_page_body(
+            api, r["id"], body_depth,
+            last_edited_time=rm.get(r["id"], {}).get("last_edited_time"),
+            use_cache=not no_cache,
+        )
+        for r in rows
+    } if with_body else {}
     out = []
     for r in rows:
         picked = {"id": r["id"], **{c: r.get(c) for c in cols}} if cols else r
@@ -2142,6 +2369,7 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
             ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
         api.transact(ops)
+        invalidate_bodies([pid])
         click.echo(f"replaced in {len(targets)} block(s)")
         return
 
@@ -2211,6 +2439,7 @@ def trash_block(api: Api, block_ref: str) -> str:
     if b.get("parent_table") == "block":
         ops.append(op("block", b["parent_id"], ["content"], "listRemove", {"id": bid}, api.space_id))
     api.transact(ops)
+    invalidate_block_ancestry(api, bid, b)
     return bid
 
 
@@ -2252,6 +2481,7 @@ def check(block_ref, uncheck):
         op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id),
     ]
     api.transact(ops)
+    invalidate_block_ancestry(api, bid, b)
     click.echo(f"{'unchecked' if uncheck else 'checked'} {bid}")
 
 

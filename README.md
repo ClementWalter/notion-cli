@@ -106,6 +106,8 @@ notion query <db> --select ID,Status,Title --filter 'Status=In progress' --sort 
 notion query <db> --filter 'Due<2026-08-01' --filter 'Status!=Done'   # ANDed
 notion query <db> --filter 'Status=Done' --with-body   # + every matched row's full page body, still one call
 notion query <db> --edited-after 2026-07-20 --with-body  # bodies only for rows changed since a cutoff — not all of them
+notion cache stats                         # rendered-body cache: entries, pages, size
+notion cache clear [<page> ...]            # drop cached bodies (all, or just these pages)
 notion schema <db>                         # property name → type
 notion search "quarterly launch plan"
 notion comments <page>                     # discussions INCL. resolved ones
@@ -146,13 +148,32 @@ a genuinely new id triggers one batched API call, never a full listing. This
 is what to reach for instead of re-running `users "<name>"` (a full
 workspace-member fetch every time) just to look up one id.
 
+Rendered page bodies are cached too, in
+`~/.config/notion-cli/cache/bodies.sqlite3`, keyed by page id + `--depth` +
+`--write` and validated against the page's `last_edited_time`. Every body
+caller already holds that timestamp (`page`/`pages` from the record fetch,
+`query` from the query's own recordMap), so a hit costs **zero** extra API
+calls, and a stale body can't be served — the revision is part of the key,
+not a TTL guess. This matters because `loadPageChunk`, the endpoint that
+fetches a body, is the most aggressively rate-limited one on the v3 API: a
+few dozen back-to-back calls earn a `429` with `Retry-After: ~60`, so a
+large `--with-body` pull that re-reads unchanged pages stalls for a minute
+at a time. Re-reading 30 rows measured 30 `loadPageChunk` calls / 24.4s cold
+vs 0 calls / 2.0s warm, byte-identical output.
+
+Pass `--no-cache` to force a re-render, `NOTION_CLI_NO_CACHE=1` to disable
+the cache process-wide, and `notion cache stats` / `notion cache clear
+[<page> ...]` to inspect or reclaim it. Writes drop the cached bodies of
+every block they touch, so an edit made through this CLI is visible
+immediately.
+
 **Avoid one `page` call per row.** Fetching a database's rows and then each
 row's body separately is the single biggest source of avoidable round-trips
 in a typical read-heavy session (measured: 60 separate `page` calls in one
-run, one per tracker row). `query --with-body` fetches every matched row's
-full body in the *same* call as the query itself; `pages <id> <id> ...`
-batches bodies for any other already-known set of ids into one call instead
-of N.
+run, one per tracker row). `query --with-body` folds all of it into one
+command — the query itself is one call, then one `loadPageChunk` per matched
+row (cached, so repeat passes cost nothing); `pages <id> <id> ...` does the
+same for any other already-known set of ids.
 
 **Don't re-fetch bodies for rows that haven't changed.** If this is a
 repeat pass over the same database (a daily digest, a periodic sync),
