@@ -562,7 +562,16 @@ def seg_to_md(segments: list | None, names: dict[str, str] | None = None, *, wri
                 elif kind == "d":
                     d = m[1]
                     rendered = d.get("start_date", "") + (f"..{d['end_date']}" if d.get("end_date") else "")
-                elif len(m) > 1:  # unknown pill kinds (link mentions, …): salvage a url/text
+                elif kind == "lm":  # link mention chip
+                    v = m[1] if len(m) > 1 and isinstance(m[1], dict) else {}
+                    href, title = v.get("href", ""), (v.get("title") or "").strip()
+                    if not href:
+                        continue
+                    if writeable:
+                        rendered = f"@[{title}]({href})" if title else f"@[]({href})"
+                    else:
+                        rendered = f"[{title}]({href})" if title else f"<{href}>"
+                elif len(m) > 1:  # unknown pill kinds: salvage a url/text
                     v = m[1]
                     if isinstance(v, str):
                         rendered = f"<{v}>" if v.startswith("http") else v
