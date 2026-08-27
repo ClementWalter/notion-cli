@@ -37,6 +37,7 @@ import time
 import uuid as uuidlib
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import urlsplit
 
 import click
 import requests
@@ -56,6 +57,21 @@ BODY_CACHE_MAX_AGE_S = 30 * 86400
 # body rendered mid-edit could be stored under a page stamp that never moves
 # again. Refuse to cache a page edited more recently than this.
 BODY_CACHE_SETTLE_S = 120
+
+# Client-side pacing for the endpoints Notion rate-limits hard. Measured on a
+# live workspace by bursting loadPageChunk until it 429'd, at two different
+# rates: 43 calls succeeded before the 429 at t=16.0s, and 59 before the 429 at
+# t=66.6s. Those two points fit a token bucket of capacity ~38 refilling at
+# ~0.32 calls/s (19/min), which also predicts the third probe (75 calls at
+# 0.54/s, no 429 — the model puts its wall at call ~92).
+#
+# Sized just under the measured values so a run settles to a rate Notion
+# tolerates instead of walking into a 60s Retry-After penalty. The bucket is
+# per-process, so a one-off read never waits: only a run longer than the burst
+# capacity ever pays, and then only what the quota costs anyway.
+THROTTLED_PATHS = {"loadPageChunk"}
+RATE_BUCKET_CAPACITY = 34.0
+RATE_BUCKET_REFILL_PER_S = 0.31
 
 
 # --------------------------------------------------------------------------
@@ -314,6 +330,37 @@ def refuse_hard_delete(path: str, body: dict | None = None) -> None:
         )
 
 
+class TokenBucket:
+    """Paces calls to a rate-limited endpoint. Full at construction, so short
+    runs are unaffected and only a long one is slowed to the sustainable rate."""
+
+    def __init__(self, capacity: float, refill_per_s: float):
+        self.capacity = capacity
+        self.refill_per_s = refill_per_s
+        self.tokens = capacity
+        self.updated = time.monotonic()
+
+    def take(self) -> float:
+        """Consume one token, sleeping if none is available. Returns the wait."""
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.refill_per_s)
+        self.updated = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return 0.0
+        wait = (1 - self.tokens) / self.refill_per_s
+        time.sleep(wait)
+        self.updated = time.monotonic()
+        self.tokens = 0.0
+        return wait
+
+    def drain(self) -> None:
+        """Give up the burst allowance — called after a 429, since the server
+        has just told us its own bucket is empty."""
+        self.tokens = 0.0
+        self.updated = time.monotonic()
+
+
 class Api:
     """v3 transport: token_v2 cookie + active-user header, retry on 429/5xx.
 
@@ -336,11 +383,16 @@ class Api:
         self.s.headers.update({"Cookie": f"token_v2={token}", "Content-Type": "application/json"})
         if self.user_id:
             self.s.headers["x-notion-active-user-header"] = self.user_id
+        self.bucket = TokenBucket(RATE_BUCKET_CAPACITY, RATE_BUCKET_REFILL_PER_S)
 
     def post(self, path: str, body: dict, *, retries: int = 5) -> dict:
         refuse_hard_delete(path, body)
         delay = 8
         for attempt in range(retries):
+            if path in THROTTLED_PATHS:
+                paced = self.bucket.take()
+                if paced:
+                    log.debug("pacing %s by %.1fs", path, paced)
             resp = self.s.post(f"{API_BASE}/{path}", json=body, timeout=60)
             if resp.status_code == 429 or resp.status_code >= 500:
                 raw = resp.headers.get("Retry-After")
@@ -348,9 +400,16 @@ class Api:
                     hinted = float(raw) if raw is not None else 0.0
                 except ValueError:
                     hinted = 0.0
-                # Retry-After: 0 is a lie — never wait less than 8/16/32/60.
-                wait = max(hinted, delay)
+                # Trust a positive Retry-After — Notion's is accurate (measured
+                # 53s and 60s against a real penalty) and over-sleeping a short
+                # hint wastes a minute. Only a missing or 0 hint (0 is a lie)
+                # falls back to the escalating 8/16/32/60 floor.
+                wait = hinted if hinted > 0 else delay
                 log.warning("%s -> %s, retrying in %.1fs", path, resp.status_code, wait)
+                # The server's own bucket is empty, so give up ours too and
+                # resume at the sustainable rate rather than bursting into
+                # another penalty.
+                self.bucket.drain()
                 time.sleep(wait)
                 delay = min(delay * 2, 60)
                 continue
@@ -542,12 +601,74 @@ def seg_plain(segments: list | None) -> str:
 
 
 # --------------------------------------------------------------------------
+# link mentions
+# --------------------------------------------------------------------------
+
+# A `lm` mention is Notion's inline link chip: icon + grey provider + label,
+# self-contained (no integration, no external_object_instance record), which is
+# why it can be authored here at all. Notion stores the payload verbatim and
+# never enriches it, so every field the chip shows has to be supplied.
+#
+# `icon_url` is rendered as a plain <img>: a URL that answers with HTML instead
+# of an image (an SPA's catch-all `/favicon.ico`, e.g. app.morpho.org) draws a
+# broken-image glyph. Hence a table of icons verified to serve a real image
+# rather than a generic `https://<host>/favicon.ico` guess — an unknown host
+# gets no icon and falls back to Notion's own chain glyph, which looks clean.
+_LINK_PROVIDERS: tuple[tuple[str, str, str, str], ...] = (
+    # (host suffix, path fragment, provider label, icon url)
+    ("linear.app", "", "Linear", "https://linear.app/favicon.ico"),
+    ("docs.google.com", "/document/", "Google Docs",
+     "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_document_x16.png"),
+    ("docs.google.com", "/spreadsheets/", "Google Sheets",
+     "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_spreadsheet_x16.png"),
+    ("docs.google.com", "/presentation/", "Google Slides",
+     "https://ssl.gstatic.com/docs/doclist/images/mediatype/icon_1_presentation_x16.png"),
+    ("docs.google.com", "", "Google Docs", "https://drive.google.com/favicon.ico"),
+    ("drive.google.com", "", "Google Drive", "https://drive.google.com/favicon.ico"),
+    ("slack.com", "", "Slack", "https://a.slack-edge.com/80588/img/icons/favicon-32.png"),
+    ("github.com", "", "GitHub", "https://github.githubassets.com/favicons/favicon.png"),
+    ("notion.so", "", "Notion", "https://www.notion.so/front-static/favicon.ico"),
+    ("notion.com", "", "Notion", "https://www.notion.so/front-static/favicon.ico"),
+    ("figma.com", "", "Figma", "https://static.figma.com/app/icon/1/favicon.png"),
+    ("dune.com", "", "Dune", "https://dune.com/assets/apple-touch-icon.png"),
+    ("etherscan.io", "", "Etherscan", "https://etherscan.io/favicon.ico"),
+)
+
+
+def link_provider(url: str) -> tuple[str, str]:
+    """(provider label, icon url) for a URL. Unknown host → label from its
+    registrable domain and no icon."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "", ""
+    host, path = parts.netloc.lower().split(":")[0], parts.path
+    for suffix, fragment, provider, icon in _LINK_PROVIDERS:
+        if (host == suffix or host.endswith("." + suffix)) and fragment in path:
+            return provider, icon
+    labels = [p for p in host.split(".") if p not in ("www", "app")]
+    return (labels[-2].capitalize() if len(labels) >= 2 else host), ""
+
+
+def link_mention_segment(url: str, label: str | None = None, provider: str | None = None) -> list:
+    """Build a `lm` segment. An empty label renders as a bare chip, so fall back
+    to the URL's own last path element to keep the chip readable."""
+    auto_provider, icon = link_provider(url)
+    title = (label or "").strip() or urlsplit(url).path.rstrip("/").split("/")[-1] or url
+    payload = {"href": url, "title": title, "link_provider": (provider or auto_provider) or None}
+    if icon:
+        payload["icon_url"] = icon
+    return ["‣", [["lm", {k: v for k, v in payload.items() if v}]]]
+
+
+# --------------------------------------------------------------------------
 # inline markdown -> segments
 # --------------------------------------------------------------------------
 
 _INLINE = re.compile(
     r"(@user\((?P<user>[0-9a-f-]{32,36})\))"
     r"|(@page\((?P<page>[^)]+)\))"
+    r"|(@\[(?P<lm_label>[^\]]*)\]\((?P<lm_url>[^)\s]+)(?:\s+\"(?P<lm_provider>[^\"]*)\")?\))"
     r"|(\*\*(?P<bold>.+?)\*\*)"
     r"|(`(?P<code>[^`]+)`)"
     r"|(\[(?P<label>[^\]]+)\]\((?P<url>[^)]+)\))"
@@ -572,6 +693,8 @@ def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
             segs.append([m.group("bold"), [["b"]]])
         elif m.group("code") is not None:
             segs.append([m.group("code"), [["c"]]])
+        elif m.group("lm_url"):
+            segs.append(link_mention_segment(m.group("lm_url"), m.group("lm_label"), m.group("lm_provider")))
         else:
             segs.append([m.group("label"), [["a", m.group("url")]]])
         pos = m.end()

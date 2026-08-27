@@ -167,6 +167,17 @@ the cache process-wide, and `notion cache stats` / `notion cache clear
 every block they touch, so an edit made through this CLI is visible
 immediately.
 
+Calls to `loadPageChunk` are also paced client-side, so a cold pull settles
+to a rate Notion tolerates instead of walking into that 60s penalty. The
+limit was measured rather than guessed: bursting until it 429'd at two
+different rates (43 calls before the wall at 16s, 59 before it at 67s) fits
+a token bucket of capacity ~38 refilling at ~0.32 calls/s, and the bucket
+here is sized just under that. It starts full, so a one-off read never
+waits — only a run longer than the burst allowance pays, and only what the
+quota costs anyway. Measured on 60 uncached pages: 84s with zero 429s,
+against 87s and a 60s stall without pacing. A positive `Retry-After` is now
+honored exactly too, instead of being rounded up to an 8/16/32/60 floor.
+
 **Avoid one `page` call per row.** Fetching a database's rows and then each
 row's body separately is the single biggest source of avoidable round-trips
 in a typical read-heavy session (measured: 60 separate `page` calls in one

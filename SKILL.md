@@ -153,11 +153,16 @@ bodies live in `~/.config/notion-cli/cache/bodies.sqlite3`, keyed by page id
 call). A page that hasn't changed is served from disk with **no**
 `loadPageChunk` request — measured on 30 rows: 30 calls / 24.4s cold vs 0
 calls / 2.0s warm, identical output. This matters because `loadPageChunk` is
-the most rate-limited v3 endpoint: a few dozen back-to-back calls return
-`429` with `Retry-After: ~60`, so a cold `--with-body` pull over hundreds of
-rows stalls for minutes. Keep `--limit` modest on a first pass over a big
-database, or narrow it with `--filter` / `--edited-after`; later passes come
-off the cache.
+the most rate-limited v3 endpoint — measured ceiling: a burst allowance of
+~38 calls, refilling at only ~0.32 calls/s (19/min).
+
+Calls are paced client-side to stay under that ceiling, so a cold pull no
+longer stalls on `429`/`Retry-After: 60` — but the quota is the quota, and a
+cold `--with-body` pass is bounded by it at roughly **3s per row** (400 rows
+≈ 20 minutes). So keep `--limit` modest on a first pass over a big database,
+or narrow it with `--filter` / `--edited-after`. Later passes come off the
+cache at no API cost. A run that is interrupted still keeps every body it
+rendered, so re-running resumes rather than starting over.
 
 The cache cannot serve stale text — the page revision is part of the key —
 and writes through this CLI drop the touched blocks' entries. Use
