@@ -7,6 +7,7 @@ No network.
 """
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -571,3 +572,119 @@ def test_refuse_hard_delete_nested():
 
 def test_refuse_hard_delete_allows_trash():
     refuse_hard_delete("saveTransactionsFanout", {"operations": [{"alive": False}]})
+
+
+# --------------------------------------------------------------------------
+# rendered-body cache
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def body_cache(tmp_path, monkeypatch):
+    """An isolated, empty body cache for one test."""
+    monkeypatch.delenv("NOTION_CLI_NO_CACHE", raising=False)
+    monkeypatch.setattr(notion_cli, "BODY_CACHE_PATH", tmp_path / "bodies.sqlite3")
+    monkeypatch.setattr(notion_cli, "_body_db", None)
+    return notion_cli
+
+
+SETTLED = 1_700_000_000_000  # a last_edited_time far outside the settle window
+
+
+def test_cached_body_is_empty_before_anything_is_stored(body_cache):
+    assert body_cache.cached_body("pid", 6, False, SETTLED) is None
+
+
+def test_stored_body_is_returned_for_the_same_revision(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    assert body_cache.cached_body("pid", 6, False, SETTLED) == "# hello"
+
+
+def test_stored_body_is_not_returned_for_a_newer_revision(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    assert body_cache.cached_body("pid", 6, False, SETTLED + 1000) is None
+
+
+def test_stored_body_is_not_returned_for_a_different_depth(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    assert body_cache.cached_body("pid", 3, False, SETTLED) is None
+
+
+def test_stored_body_is_not_returned_for_a_different_writeable_flag(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    assert body_cache.cached_body("pid", 6, True, SETTLED) is None
+
+
+def test_cached_body_without_a_revision_stamp_is_never_served(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    assert body_cache.cached_body("pid", 6, False, None) is None
+
+
+def test_an_actively_edited_page_is_not_cached(body_cache):
+    now_ms = int(time.time() * 1000)
+    body_cache.store_body("pid", 6, False, now_ms, "# mid-edit")
+    assert body_cache.cached_body("pid", 6, False, now_ms) is None
+
+
+def test_a_body_older_than_the_max_age_backstop_is_not_served(body_cache, monkeypatch):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    monkeypatch.setattr(notion_cli, "BODY_CACHE_MAX_AGE_S", -1)
+    assert body_cache.cached_body("pid", 6, False, SETTLED) is None
+
+
+def test_invalidate_drops_the_entry(body_cache):
+    body_cache.store_body("pid", 6, False, SETTLED, "# hello")
+    body_cache.invalidate_bodies(["pid"])
+    assert body_cache.cached_body("pid", 6, False, SETTLED) is None
+
+
+def test_invalidate_leaves_other_pages_alone(body_cache):
+    body_cache.store_body("keep", 6, False, SETTLED, "# keep")
+    body_cache.invalidate_bodies(["drop"])
+    assert body_cache.cached_body("keep", 6, False, SETTLED) == "# keep"
+
+
+def test_cache_is_disabled_by_the_env_var(body_cache, monkeypatch):
+    monkeypatch.setenv("NOTION_CLI_NO_CACHE", "1")
+    monkeypatch.setattr(notion_cli, "_body_db", None)
+    assert body_cache.body_cache_db() is None
+
+
+def test_an_unwritable_cache_path_degrades_to_no_cache(body_cache, monkeypatch, tmp_path):
+    # a file where the cache directory should be — mkdir must fail
+    blocker = tmp_path / "blocked"
+    blocker.write_text("")
+    monkeypatch.setattr(notion_cli, "BODY_CACHE_PATH", blocker / "bodies.sqlite3")
+    assert body_cache.body_cache_db() is None
+
+
+def test_a_write_invalidates_the_touched_blocks_cached_body(body_cache, monkeypatch):
+    body_cache.store_body("blk-1", 6, False, SETTLED, "# stale")
+    api = notion_cli.Api.__new__(notion_cli.Api)  # no auth needed; post is stubbed
+    api.space_id = "space"
+    monkeypatch.setattr(notion_cli.Api, "post", lambda self, path, body, **kw: {})
+    api.transact([notion_cli.op("block", "blk-1", ["properties"], "set", ["x"], "space")])
+    assert body_cache.cached_body("blk-1", 6, False, SETTLED) is None
+
+
+def test_invalidating_a_nested_block_drops_its_containing_pages_body(body_cache, monkeypatch):
+    # to_do nested in a toggle nested in the page — only the page has a cached body
+    parents = {
+        "todo": {"id": "todo", "parent_table": "block", "parent_id": "toggle"},
+        "toggle": {"id": "toggle", "parent_table": "block", "parent_id": "page"},
+        "page": {"id": "page", "parent_table": "collection", "parent_id": "coll"},
+    }
+    body_cache.store_body("page", 6, False, SETTLED, "# stale")
+    api = notion_cli.Api.__new__(notion_cli.Api)
+    monkeypatch.setattr(notion_cli.Api, "records", lambda self, table, ids: {i: parents[i] for i in ids})
+    notion_cli.invalidate_block_ancestry(api, "todo", parents["todo"])
+    assert body_cache.cached_body("page", 6, False, SETTLED) is None
+
+
+def test_ancestry_invalidation_stops_at_the_page_boundary(body_cache, monkeypatch):
+    parents = {"page": {"id": "page", "parent_table": "collection", "parent_id": "coll"}}
+    body_cache.store_body("coll", 6, False, SETTLED, "# the database, not the page")
+    api = notion_cli.Api.__new__(notion_cli.Api)
+    monkeypatch.setattr(notion_cli.Api, "records", lambda self, table, ids: {i: parents[i] for i in ids})
+    notion_cli.invalidate_block_ancestry(api, "page", parents["page"])
+    assert body_cache.cached_body("coll", 6, False, SETTLED) == "# the database, not the page"

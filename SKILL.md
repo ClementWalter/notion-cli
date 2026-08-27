@@ -119,6 +119,8 @@ notion comments <page_id> --open-only
 notion users [query]           # workspace members (name, email, id)
 notion resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
 notion blocks <page_id> --depth 2   # block ids (targets for edit/delete)
+notion cache stats                 # rendered-body cache: entries, pages, size
+notion cache clear [<page> ...]    # drop cached bodies (all, or just these pages)
 ```
 
 **Prefer `resolve <id>` over re-running `users "<name>"`** to look up a
@@ -140,9 +142,28 @@ tool round-trips in a read-heavy session (measured: 60 separate `page`
 calls in one run, one per tracker row — each one a full extra agent turn
 resending the whole growing context, not just an extra API hit). If the ids
 come from a query you're running right now, add `--with-body` to that same
-`query` call — it fetches every matched row's full body in one shot. If the
-ids come from somewhere else (`search`, `resolve`, already known), pass them
-all to `pages <id1> <id2> ...` in one call instead of iterating.
+`query` call — one command instead of N agent turns. If the ids come from
+somewhere else (`search`, `resolve`, already known), pass them all to
+`pages <id1> <id2> ...` in one call instead of iterating.
+
+**Bodies are cached, so re-reading an unchanged page is free.** Rendered
+bodies live in `~/.config/notion-cli/cache/bodies.sqlite3`, keyed by page id
++ `--depth` + `--write` and validated against the page's `last_edited_time`
+(which every caller already has in hand, so validating costs no extra API
+call). A page that hasn't changed is served from disk with **no**
+`loadPageChunk` request — measured on 30 rows: 30 calls / 24.4s cold vs 0
+calls / 2.0s warm, identical output. This matters because `loadPageChunk` is
+the most rate-limited v3 endpoint: a few dozen back-to-back calls return
+`429` with `Retry-After: ~60`, so a cold `--with-body` pull over hundreds of
+rows stalls for minutes. Keep `--limit` modest on a first pass over a big
+database, or narrow it with `--filter` / `--edited-after`; later passes come
+off the cache.
+
+The cache cannot serve stale text — the page revision is part of the key —
+and writes through this CLI drop the touched blocks' entries. Use
+`--no-cache` to force a re-render, `NOTION_CLI_NO_CACHE=1` to disable it
+entirely, and `notion cache stats` / `notion cache clear` to inspect or
+reclaim it.
 
 **On a repeat pass over the same database (a periodic digest, a daily
 sync), add `--edited-after <date>` to `--with-body`** so bodies are fetched
