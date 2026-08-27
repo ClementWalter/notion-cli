@@ -93,6 +93,7 @@ means re-grab the cookie and re-run `auth`.
 notion page <id_or_url>              # props + body
 notion page <id_or_url> --props-only # cheapest read
 notion page <id_or_url> --no-props   # body only
+notion page <id_or_url> --write      # @user(uuid)/@page(uuid) so the body can be written back
 notion page <id_or_url> --depth 2    # cap nested-children recursion
 notion pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
                                              # otherwise be one `page` call per id (content only, no props)
@@ -188,11 +189,22 @@ MD
 # In-place text replace (preserves formatting; unique match required unless --all).
 # Searches every property, including table cells — not just block titles.
 # A unique snippet of the table as `page` renders it rewrites rows (insert/delete/update).
+# Mentions match as `page` renders them (`@Ada`). Prefer --section over guessing
+# the current paragraph; on no match, edit prints a short page preview.
 notion edit <page> "1,296,000" "1,335,000"
-notion edit <page> "| 2026-08-24 | 50,000 |" "| 2026-08-24 | 50,000 |
-| 2026-08-25 | 39,000 |"
+notion edit <page> --section "1. What" --md what.md
+notion edit <page> --section "2. Crew" --md - <<'MD'
+| Role | Owner |
+|---|---|
+| Vault launch lead | @Clement Walter |
+MD
+notion rewrite <page> --md body.md   # replace the whole page body (keeps properties)
+
+# Many database rows in one call (optional md/body/icon keys; rest = properties)
+notion create --parent <db> --jsonl rows.jsonl
 
 notion comment <page> "done — see @page(<id>)"
+notion delete <page>                 # trash only — recoverable
 notion delete-block <block_id>
 ```
 
@@ -203,8 +215,13 @@ notion delete-block <block_id>
   bare notion.so links.
 - New tracker-style rows: TL;DR callout (`> [!💸:blue_bg] …`) + `## Why` +
   `## What` todos + `## Sources`.
-- Rewrite, don't stack: prefer `edit` (search-replace) over `append` when
-  updating existing content.
+- Rewrite, don't stack: prefer `edit --section` (or search-replace) over
+  `append` when updating existing content. Do not loop `create` for a
+  batch of tracker rows — use `--jsonl`.
+- `@user(uuid)` / `@page(id)` always write mentions. After any
+  `page`/`query`/`users` call, unique cached display names also work
+  (`@Clement Walter`, `--prop 'Owner=Clement Walter'`). `page --write`
+  emits the uuid form if you need a guaranteed round-trip.
 
 ## Gotchas
 
@@ -217,6 +234,10 @@ notion delete-block <block_id>
   numbers (ISO dates compare correctly as strings). Multiple `--filter` AND.
 - `query` needs a view on the database (any view); `schema` prints the
   collection + view ids it resolved.
+- **Never hard-delete.** Regular delete only (`notion delete` / `delete-block`
+  / `alive=false`). That is the user Trash action — the page stays visible
+  and restorable. The CLI refuses `deleteBlocks` and any
+  `permanentlyDelete` / `permanently_deleted_time` payload.
 - Deleted pages still resolve (trash): `page` marks them `deleted: true`.
 - `create --template` clones a template's body by deep-copying its blocks in
   the same transaction (templates are just pages with `is_template: true`);
@@ -232,7 +253,11 @@ notion delete-block <block_id>
   has exactly one table with the same column count, rows are merged into it.
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
-- The client honors `Retry-After` and backs off on 429/5xx.
+- The client honors `Retry-After` and backs off on 429/5xx. If Notion
+  omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s).
+- `edit` of a GFM table re-parses every cell through `md_to_segments`.
+  `@Name` stays a mention when that user is in the id cache; otherwise
+  pass `@user(uuid)` or `page --write` first.
 
 ## Tests
 

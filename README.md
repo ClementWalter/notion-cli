@@ -99,6 +99,7 @@ unless you log out; on `401 — token_v2 expired`, just `login` again.
 ```bash
 # Read
 notion page <url-or-id>                    # properties + body as compact markdown
+notion page <url-or-id> --write            # @user(uuid)/@page(uuid) so the body can be written back
 notion page <url-or-id> --props-only       # cheapest possible read
 notion pages <id> <id> <id> ...             # multiple pages' bodies in ONE call, not one `page` call each
 notion query <db> --select ID,Status,Title --filter 'Status=In progress' --sort ID
@@ -114,12 +115,16 @@ notion resolve <id> [<id> ...]              # id -> name/title, cached locally, 
 # Write
 notion create --parent <db> --prop 'Title=New row' --prop 'Status=Triage' \
   --prop 'Owner=user://<uuid>' --icon 🚀 --md body.md
+notion create --parent <db> --jsonl rows.jsonl   # many rows, one command
 notion templates <db>                      # list templates
 notion create --parent <db> --prop 'Title=…' --template 'AI new item'   # clone one
 notion update <page> --prop 'Status=Done' --prop 'Due='   # empty value clears
 notion append <page> --md notes.md         # markdown incl. callouts, todos, @user()/@page() mentions
-notion edit <page> "old text" "new text"   # in-place replace, formatting preserved
+notion edit <page> "old text" "new text"   # in-place replace; prints a preview on no match
+notion edit <page> --section "1. What" --md what.md   # replace a heading's body
+notion rewrite <page> --md body.md         # replace the whole page body
 notion comment <page> "ping @user(<uuid>)"
+notion delete <page>                       # trash (recoverable). never hard-deletes
 notion delete-block <block-id>
 ```
 
