@@ -2233,6 +2233,29 @@ def delete_block(block_ref):
 
 
 @cli.command()
+@click.argument("block_ref")
+@click.option("--uncheck", is_flag=True, help="clear the checkbox instead of setting it")
+def check(block_ref, uncheck):
+    """Set or clear a to-do block's checkbox (find the block id via `blocks <page>`).
+
+    Only touches the `checked` property — unlike --section or a table-md
+    rewrite, this never recreates the block, so it's the right tool for
+    flipping one checkbox without disturbing its siblings' history.
+    """
+    api = api_or_die()
+    bid = parse_id(block_ref)
+    b = api.block(bid)
+    if b.get("type") != "to_do":
+        raise click.ClickException(f"block {bid} is type {b.get('type')!r}, not a to_do")
+    ops = [
+        op("block", bid, ["properties", "checked"], "set", [["No" if uncheck else "Yes"]], api.space_id),
+        op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id),
+    ]
+    api.transact(ops)
+    click.echo(f"{'unchecked' if uncheck else 'checked'} {bid}")
+
+
+@cli.command()
 @click.argument("page_ref")
 @click.argument("text")
 @click.option("--discussion", "discussion_id", help="reply into an existing discussion id")
