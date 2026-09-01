@@ -373,7 +373,7 @@ class Api:
         token = os.environ.get("NOTION_TOKEN_V2") or cfg.get("token_v2")
         if not token:
             raise click.ClickException(
-                "No token. Run `notion_cli.py auth` (paste token_v2 from the "
+                "No token. Run `notion auth` (paste token_v2 from the "
                 "browser: devtools → Application → Cookies → notion.so → "
                 "token_v2), or `auth --import` to reuse a stored one."
             )

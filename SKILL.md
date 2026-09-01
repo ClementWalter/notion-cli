@@ -208,7 +208,7 @@ notion update <page> --archive
 # merged into it (new rows go above a trailing "Running total" row).
 notion append <page> "one liner"
 notion append <page> --md notes.md
-cat notes.md | notion_cli.py append <page> --md -
+cat notes.md | notion append <page> --md -
 notion append <page> --md - <<'MD'
 | 2026-08-25 | 39,000 |  | [Slack](https://...) |
 MD
