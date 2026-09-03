@@ -314,10 +314,15 @@ insert-at-position primitive. Consequences:
 - **A heading's own text is a whole-block match.** A multi-paragraph `new`
   anchored on a heading lands inside the heading block, silently. Never anchor
   an insertion on a heading; `append` to the end or use `--section`.
-- **`edit --section <heading> --md` rewrites everything under the heading**,
-  including bullets nested under a toggle heading. When no heading follows the
-  section, trailing non-heading content (dividers, footnotes) can be swallowed:
-  re-read the full page after and re-append anything lost.
+- **`edit --section <heading> --md` rewrites the heading's sibling blocks up
+  to the next heading**, never its children: on a toggle heading whose content
+  is nested inside it, the new blocks land as siblings and the old children stay,
+  so the page shows both. Check `blocks <page> --depth 2` first; when the
+  content is indented under the heading, `delete-block` each child id after the
+  rewrite. Nested `###` headings are not matchable by `--section` at all. When
+  no heading follows the section, trailing non-heading content (dividers,
+  footnotes) can be swallowed: re-read the full page after and re-append
+  anything lost.
 - **Tables:** match a snippet exactly as `page` renders it and pass the same
   snippet plus the new rows as `new`. Inserting before a trailing total row,
   backfilling mid-table and adding several rows in one call all work this way.
