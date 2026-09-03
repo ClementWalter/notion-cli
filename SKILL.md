@@ -95,6 +95,7 @@ notion page <id_or_url> --props-only # cheapest read
 notion page <id_or_url> --no-props   # body only
 notion page <id_or_url> --write      # @user(uuid)/@page(uuid) so the body can be written back
 notion page <id_or_url> --depth 2    # cap nested-children recursion
+notion page <id_or_url> --no-cache   # re-render — the check to run right after a block-level edit
 notion pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
                                              # otherwise be one `page` call per id (content only, no props)
 
@@ -105,20 +106,28 @@ notion query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 20
 notion query <db_or_ds> --filter 'Due is_empty' --json
 notion query <db_or_ds> --filter 'Status=In progress' --with-body   # + every matched row's
                                              # full page body, in the SAME call — see below
-notion query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY for rows
-                                             # changed since a cutoff — for a repeat pass over the
-                                             # same database, don't re-fetch what hasn't changed
+notion query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY for rows whose
+                                             # last_edited_time moved since a cutoff — narrows a repeat
+                                             # pass; not a change detector on its own (see below)
 
 # Filter DSL: =  !=  >  >=  <  <=  ~ (contains)  'Prop is_empty'  'Prop is_not_empty'
 # Applied client-side on flattened values (numeric-aware; ~ is case-insensitive).
+# Relation cells: text mode prints `#<ID> <Title>` when the target row is in the
+# same result set (else its url); --json keeps comma-separated notion.so urls.
+# A deleted row is simply absent (no tombstone) — confirm with `page <id> --props-only`.
 
-notion schema <db_or_ds>       # property name → type (+ collection/view ids)
+notion schema <db_or_ds>       # property name → type (+ collection/view ids); types only, no option lists
 notion search "vault launch" --limit 10
-notion comments <page_id>      # discussions INCL. RESOLVED (public API can't)
+notion search "Clément" --created-after 2026-08-01   # client-side filter on creation time — the
+                                             # closest proxy to a notification inbox (v3 has none);
+                                             # catches new pages only, not edits or mentions in old ones
+notion comments <page_id>      # every page-level + inline discussion, open AND resolved (public API
+                               # hides resolved): [OPEN]/[resolved], anchored block id, author, datetime
 notion comments <page_id> --open-only
-notion users [query]           # workspace members (name, email, id)
+notion users [query]           # space permission grants (name, email, id) — NOT every member
 notion resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
-notion blocks <page_id> --depth 2   # block ids (targets for edit/delete)
+notion blocks <page_id>        # child block ids (targets for edit/check/delete-block); default depth 1
+                               # — keep it there on long pages, see Gotchas
 notion cache stats                 # rendered-body cache: entries, pages, size
 notion cache clear [<page> ...]    # drop cached bodies (all, or just these pages)
 ```
@@ -164,21 +173,26 @@ or narrow it with `--filter` / `--edited-after`. Later passes come off the
 cache at no API cost. A run that is interrupted still keeps every body it
 rendered, so re-running resumes rather than starting over.
 
-The cache cannot serve stale text — the page revision is part of the key —
-and writes through this CLI drop the touched blocks' entries. Use
-`--no-cache` to force a re-render, `NOTION_CLI_NO_CACHE=1` to disable it
-entirely, and `notion cache stats` / `notion cache clear` to inspect or
-reclaim it.
+The page revision is part of the key, and writes through this CLI drop the
+entries of the ids they touch. One window stays open: a write aimed at a
+nested block id (`edit <block_id> "old" "new"`, `append <block_id>`) drops
+that block's entry, not the containing page's, whose revision Notion bumps
+only server-side — so `page` run right after can still render the pre-edit
+text. Verify such an edit with `blocks <block_id>` (reads the block record
+directly) or `page --no-cache`. `NOTION_CLI_NO_CACHE=1` disables the cache
+entirely; `notion cache stats` / `notion cache clear` inspect or reclaim it.
 
 **On a repeat pass over the same database (a periodic digest, a daily
 sync), add `--edited-after <date>` to `--with-body`** so bodies are fetched
-only for rows that actually changed since the last pass, not every row every
-time (verified on a real 181-row table: `--edited-after` narrowed it to 18).
-It filters on the row's own `last_edited_time`, which Notion propagates up
-from any edited descendant block — verified by recursively walking a page's
-real children and confirming the row's own timestamp matched its
-most-recently-edited descendant exactly — so it reliably catches
-body-content edits, not just title/property changes.
+only for rows whose `last_edited_time` moved since the last pass, not every
+row every time (measured on a 181-row table: 18 bodies fetched instead of
+181). Edits made in the Notion app propagate from any descendant block up to
+the row's own timestamp, so in-app body edits are caught. It is a narrowing
+filter, not a change detector: block-level writes made through this CLI
+(`edit`, `append`, `edit --section` on a row) can leave the row's timestamp
+untouched, and a board-view drag or similar non-content interaction can bump
+it with nothing changed. To guarantee no silent change was missed, diff the
+properties of a full `query` read against the previous run's.
 
 ### Write
 
@@ -188,13 +202,19 @@ notion create --parent <db_or_ds> \
   --prop 'Title=RFQ swap beta' --prop 'Status=Triage' \
   --prop 'Owner=user://<user-uuid>…' --prop 'Parent item=https://notion.so/<id>' \
   --prop 'Due=2026-07-31' --icon 💸 --md body.md
+# Owner ids are NOTION user ids (a Slack `U…` id fails with an opaque
+# `400 incomplete_ancestor_path`); a wrong-but-valid id resolves silently, so
+# re-read `--props-only` and check the resolved name.
+# A callout's colour (`> [!💸:blue_bg]`) is only settable inside this create
+# transaction; --icon is unreliable (silent no-op on many rows). See Gotchas.
 
 # List a database's templates, then clone one at create time
 notion templates <db_or_ds>
 notion create --parent <db_or_ds> --prop 'Title=…' --template 'AI new item'
 # --template clones the template's body SYNCHRONOUSLY into the create
 # transaction (no async placeholder race). Fill the cloned placeholders after
-# with `edit`/`append`; --md/--body appends beneath the cloned body.
+# with `edit`/`append`; --md/--body appends beneath the cloned body. The clone
+# keeps the template's callout colour, which cannot be changed afterwards.
 
 # Update properties (empty value clears; date ranges as start..end)
 notion update <page> --prop 'Status=Done' --prop 'Due='
@@ -218,7 +238,9 @@ MD
 # A unique snippet of the table as `page` renders it rewrites rows (insert/delete/update).
 # Mentions match as `page` renders them (`@Ada`). Prefer --section over guessing
 # the current paragraph; on no match, edit prints a short page preview.
+# Anchor on plain text; `--` when old/new start with '-'. See "Editing bodies safely".
 notion edit <page> "1,296,000" "1,335,000"
+notion edit <page> -- "- [ ] ship it" "- [ ] ship it by Friday"
 notion edit <page> --section "1. What" --md what.md
 notion edit <page> --section "2. Crew" --md - <<'MD'
 | Role | Owner |
@@ -251,9 +273,13 @@ notion delete-block <block_id>
   chip a human sees as `<icon> Provider Label`, not a raw URL. Provider and icon
   are derived from the host (Linear, Google Docs/Sheets/Slides, Drive, Slack,
   GitHub, Figma, Dune, Etherscan); an unknown host keeps the label and drops the
-  icon, which renders as Notion's own chain glyph. `@[label](url "Provider")`
-  overrides the provider. A Notion URL is the one exception: use `@page(<id>)`,
-  which tracks the page's live title and icon.
+  icon, which renders as Notion's own chain glyph — that is the intended
+  fallback; pointing at a guessed `/favicon.ico` yields a broken image instead.
+  `@[label](url "Provider")` overrides the provider. A Notion URL is the one
+  exception: use `@page(<id>)`, which tracks the page's live title and icon.
+- A plain `@Name` in markdown is not converted unless that name is in the id
+  cache (below) — it silently lands as text. Only `@page(<id>)`, `@user(<id>)`
+  and cached unique names become mentions.
 - New tracker-style rows: TL;DR callout (`> [!💸:blue_bg] …`) + `## Why` +
   `## What` todos + `## Sources`.
 - Rewrite, don't stack: prefer `edit --section` (or search-replace) over
@@ -264,7 +290,42 @@ notion delete-block <block_id>
   (`@Clement Walter`, `--prop 'Owner=Clement Walter'`). `page --write`
   emits the uuid form if you need a guaranteed round-trip — and `@[label](url)`
   for link mentions, which a plain `page` renders as `[label](url)` so a digest
-  reads cleanly.
+  reads cleanly. Rewriting a body from plain `page` output therefore downgrades
+  every chip to a hyperlink — always round-trip from `--write`.
+
+## Editing bodies safely
+
+`edit <page> "old" "new"` matches raw rich-text runs, and the CLI has no
+insert-at-position primitive. Consequences:
+
+- **`old` must be plain text.** Bold markers, `[label](url)` brackets and a
+  code span straddling runs are reconstructed from run metadata, not literal
+  characters: such an anchor returns `no match` or
+  `match spans formatting boundaries`. Anchor on a bare word or date and narrow
+  from there.
+- **`old`/`new` starting with `-`** (a `- [ ]` todo line) need `--` before them
+  (Click option parsing).
+- **A plain-text prefix of a bullet that continues into a link matches only
+  that prefix.** The bullet's tail is stitched onto `new` with no separator
+  while `edit` still reports `replaced in 1 block(s)`. Re-read any edited line
+  that carries a link.
+- **Link hrefs are never rewritten.** Matching the visible label relabels it
+  only; matching the URL fails. To redirect a link, append a corrected one.
+- **A heading's own text is a whole-block match.** A multi-paragraph `new`
+  anchored on a heading lands inside the heading block, silently. Never anchor
+  an insertion on a heading; `append` to the end or use `--section`.
+- **`edit --section <heading> --md` rewrites everything under the heading**,
+  including bullets nested under a toggle heading. When no heading follows the
+  section, trailing non-heading content (dividers, footnotes) can be swallowed:
+  re-read the full page after and re-append anything lost.
+- **Tables:** match a snippet exactly as `page` renders it and pass the same
+  snippet plus the new rows as `new`. Inserting before a trailing total row,
+  backfilling mid-table and adding several rows in one call all work this way.
+- **Checkboxes** are not text: `edit` cannot reach them. Use
+  `check <block_id> [--uncheck]` with an id from `blocks <page>` at default
+  depth.
+- **Verify block-level writes** with `blocks <block_id>` or `page --no-cache`;
+  a plain `page` can serve the pre-edit render (see the cache note above).
 
 ## Gotchas
 
@@ -281,12 +342,32 @@ notion delete-block <block_id>
   / `alive=false`). That is the user Trash action — the page stays visible
   and restorable. The CLI refuses `deleteBlocks` and any
   `permanentlyDelete` / `permanently_deleted_time` payload.
-- Deleted pages still resolve (trash): `page` marks them `deleted: true`.
+- Deleted pages still resolve (trash): `page` marks them `deleted: true`. A
+  deleted row is simply absent from `query` — no tombstone, no status — so
+  diff the ID column against a previous read and confirm each dropout with
+  `page <id> --props-only`.
+- `users [query]` lists the space's permission grants, not every member: an
+  empty result is not absence. `Owner=user://<id>` needs a Notion user id (a
+  Slack `U…` id fails with `400 incomplete_ancestor_path`, which reads like a
+  parent error). Fallback: `page <row> --raw` on a row the person already owns
+  and take the `u`-tagged segment. A profile page's `created_by_id` is its
+  author, not its subject. A wrong id resolves silently — re-read
+  `--props-only` after writing an Owner.
+- `create --md`: the TL;DR callout colour is only settable via
+  `> [!emoji:color_bg]` inside the create transaction — a later recolour fails
+  with `incomplete_ancestor_path`, and omitting `:<color>_bg` renders white.
+  `--icon` silently no-ops on many rows. `--md` can no-op on a reported
+  success: re-read `--raw` and check `content` is non-empty and the first child
+  is a `callout` with `format.block_color`.
 - `create --template` clones a template's body by deep-copying its blocks in
   the same transaction (templates are just pages with `is_template: true`);
   it does NOT call the API's async template instantiation, so there is no
   placeholder-stacking race. Auto-increment IDs are still assigned lazily by
-  the server.
+  the server. The clone's callout colour is fixed and cannot be changed after.
+- `schema` prints types only. `status`/`select` option lists live in the raw
+  collection record: `resolve_collection(api, ref)[0]["schema"][pid]["options"]`.
+  A row's stored `status` can be a string no longer in that list (after an
+  option rename/delete); `query` renders the raw string.
 - Formula/rollup values are computed server-side and not stored on the row
   record — they flatten to None.
 - Simple-table cells live in `table_row.properties[<column-id>]`, not
@@ -297,7 +378,16 @@ notion delete-block <block_id>
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - The client honors `Retry-After` and backs off on 429/5xx. If Notion
-  omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s).
+  omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s). Only `loadPageChunk`
+  is paced client-side; other reads are single un-throttled v3 calls, so a
+  tight loop of `page` calls or a deep `blocks` walk can still exhaust the
+  retry budget.
+- `blocks <page> --depth 4` on a long page recurses into every linked page to
+  resolve titles and triggers sustained `syncRecordValues` 429s that outlast
+  the retries — stay at the default depth. A hand-rolled recursion over
+  `api.block(id)["content"]` hits the same wall.
+- `api.block(id)` (direct use from Python) needs the dashed UUID form; the
+  subcommands accept both dashed and bare 32-hex ids.
 - `edit` of a GFM table re-parses every cell through `md_to_segments`.
   `@Name` stays a mention when that user is in the id cache; otherwise
   pass `@user(uuid)` or `page --write` first.
