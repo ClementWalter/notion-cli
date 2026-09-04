@@ -370,7 +370,10 @@ insert-at-position primitive. Consequences:
   with `incomplete_ancestor_path`, and omitting `:<color>_bg` renders white.
   `--icon` silently no-ops on many rows. `--md` can no-op on a reported
   success: re-read `--raw` and check `content` is non-empty and the first child
-  is a `callout` with `format.block_color`.
+  is a `callout` with `format.block_color`. A `status`-type property can also
+  come back as the database's default rather than the value passed, on a create
+  that reports success and sets every other property: re-read `--props-only`
+  and set it again with `update --prop` when it did not stick.
 - `create --template` clones a template's body by deep-copying its blocks in
   the same transaction (templates are just pages with `is_template: true`);
   it does NOT call the API's async template instantiation, so there is no
