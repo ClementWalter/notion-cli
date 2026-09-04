@@ -2672,5 +2672,21 @@ def comment(page_ref, text, discussion_id):
     click.echo(f"comment {cid} added (discussion {discussion_id})")
 
 
+@cli.command(name="resolve-discussion")
+@click.argument("discussion_id")
+@click.option("--reopen", is_flag=True, help="mark unresolved instead of resolved")
+def resolve_discussion(discussion_id, reopen):
+    """Mark a comment discussion resolved, or unresolved with --reopen.
+
+    Takes a discussion id as printed by `comments <page>` (the `discussion
+    <id> [OPEN|resolved]` line), not a comment id.
+    """
+    api = api_or_die()
+    did = parse_id(discussion_id)
+    ops = [op("discussion", did, ["resolved"], "set", not reopen, api.space_id)]
+    api.transact(ops)
+    click.echo(f"{'reopened' if reopen else 'resolved'} discussion {did}")
+
+
 if __name__ == "__main__":
     cli()
