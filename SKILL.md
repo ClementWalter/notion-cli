@@ -396,6 +396,11 @@ insert-at-position primitive. Consequences:
 - `edit` of a GFM table re-parses every cell through `md_to_segments`.
   `@Name` stays a mention when that user is in the id cache; otherwise
   pass `@user(uuid)` or `page --write` first.
+- **No write path to resolve a discussion.** `comments` reads open and
+  resolved state; `comment` only replies into a thread (new replies default
+  `resolved: False`). There is no subcommand that flips an existing
+  discussion to resolved — don't promise that to a user, and don't fake it
+  with a closing reply.
 
 ## Tests
 
