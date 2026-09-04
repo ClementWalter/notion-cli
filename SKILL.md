@@ -253,6 +253,13 @@ notion rewrite <page> --md body.md   # replace the whole page body (keeps proper
 notion create --parent <db> --jsonl rows.jsonl
 
 notion comment <page> "done — see @page(<id>)"
+notion comment <page> "answered" --discussion <discussion_id>   # reply into an existing thread
+
+# Close (or reopen) a comment thread. Takes a discussion id as printed by
+# `comments <page>` (the `discussion <id> [OPEN|resolved]` line), not a
+# comment id.
+notion resolve-discussion <discussion_id>
+notion resolve-discussion <discussion_id> --reopen
 
 # Toggle one to-do's checkbox without touching content or recreating the
 # block (unlike --section/table-md, which rewrite everything in scope).
@@ -396,11 +403,9 @@ insert-at-position primitive. Consequences:
 - `edit` of a GFM table re-parses every cell through `md_to_segments`.
   `@Name` stays a mention when that user is in the id cache; otherwise
   pass `@user(uuid)` or `page --write` first.
-- **No write path to resolve a discussion.** `comments` reads open and
-  resolved state; `comment` only replies into a thread (new replies default
-  `resolved: False`). There is no subcommand that flips an existing
-  discussion to resolved — don't promise that to a user, and don't fake it
-  with a closing reply.
+- A brand-new discussion (`comment` without `--discussion`) is always created
+  `resolved: False` — there's no `create --resolved` shortcut; call
+  `resolve-discussion` right after if it should start closed.
 
 ## Tests
 
