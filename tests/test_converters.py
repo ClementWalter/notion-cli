@@ -745,6 +745,46 @@ def test_a_write_invalidates_the_touched_blocks_cached_body(body_cache, monkeypa
     assert body_cache.cached_body("blk-1", 6, False, SETTLED) is None
 
 
+def _captured_transaction(monkeypatch):
+    """Stub Api.post and hand back the list its next call receives its `operations` in."""
+    captured = {}
+    api = notion_cli.Api.__new__(notion_cli.Api)
+    api.space_id = "space"
+
+    def fake_post(self, path, body, **kw):
+        captured["path"] = path
+        captured["ops"] = body["transactions"][0]["operations"]
+        return {}
+
+    monkeypatch.setattr(notion_cli.Api, "post", fake_post)
+    monkeypatch.setattr(notion_cli, "api_or_die", lambda: api)
+    return captured
+
+
+def test_resolve_discussion_sets_resolved_true(monkeypatch):
+    captured = _captured_transaction(monkeypatch)
+    notion_cli.resolve_discussion.callback("34f5a735-8d5e-8080-9e30-001caf284d6b", reopen=False)
+    [operation] = captured["ops"]
+    assert operation["pointer"] == {
+        "table": "discussion", "id": "34f5a735-8d5e-8080-9e30-001caf284d6b", "spaceId": "space",
+    }
+    assert operation["path"] == ["resolved"]
+    assert operation["command"] == "set"
+    assert operation["args"] is True
+
+
+def test_resolve_discussion_reopen_sets_resolved_false(monkeypatch):
+    captured = _captured_transaction(monkeypatch)
+    notion_cli.resolve_discussion.callback("34f5a735-8d5e-8080-9e30-001caf284d6b", reopen=True)
+    assert captured["ops"][0]["args"] is False
+
+
+def test_resolve_discussion_normalizes_a_bare_hex_id(monkeypatch):
+    captured = _captured_transaction(monkeypatch)
+    notion_cli.resolve_discussion.callback("34f5a7358d5e80809e30001caf284d6b", reopen=False)
+    assert captured["ops"][0]["pointer"]["id"] == "34f5a735-8d5e-8080-9e30-001caf284d6b"
+
+
 def test_invalidating_a_nested_block_drops_its_containing_pages_body(body_cache, monkeypatch):
     # to_do nested in a toggle nested in the page — only the page has a cached body
     parents = {
