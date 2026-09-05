@@ -227,6 +227,9 @@ notion update <page> --archive
 # A GFM table on a page that already has one table with the same columns is
 # merged into it (new rows go above a trailing "Running total" row).
 notion append <page> "one liner"
+# a TEXT argument starting with "-" (a bullet line) reads as an unknown
+# option to Click ("No such option '- '") unless preceded by --:
+notion append <page> -- "- a bullet line"
 notion append <page> --md notes.md
 cat notes.md | notion append <page> --md -
 notion append <page> --md - <<'MD'
