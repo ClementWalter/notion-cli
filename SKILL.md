@@ -368,7 +368,11 @@ insert-at-position primitive. Consequences:
   and take the `u`-tagged segment, or grep `~/.config/notion-cli/cache/id_names.json`
   (`users` bucket) for the name if any prior command already resolved it — no
   extra API call. A profile page's `created_by_id` is its
-  author, not its subject. A wrong id resolves silently — re-read
+  author, not its subject. A wrong id resolves silently, and even a correct
+  cached uuid (`user://<id>` or bare `<id>`) has silently no-op'd on `update
+  --prop 'Owner=…'` while reporting success — the cached display name
+  (`Owner=Mathieu Saugier`) went through reliably in the same case. Prefer the
+  name over the uuid when both are available, and always re-read
   `--props-only` after writing an Owner.
 - `create --md`: the TL;DR callout colour is only settable via
   `> [!emoji:color_bg]` inside the create transaction — a later recolour fails
