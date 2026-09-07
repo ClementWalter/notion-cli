@@ -31,7 +31,6 @@ import logging
 import os
 import re
 import sqlite3
-import stat
 import sys
 import time
 import uuid as uuidlib
@@ -82,37 +81,69 @@ RATE_BUCKET_REFILL_PER_S = 0.31
 
 
 def load_config() -> dict:
+    config = vault_config()
+    if config:
+        return config
     if CONFIG_PATH.exists():
         return json.loads(CONFIG_PATH.read_text())
-    return vault_config()
+    return {}
 
 
-def vault_config() -> dict:
-    """Config from the 1Password vault `Claudine` (Document 'notion-cli config.json'), when no local file exists.
-
-    Goes through `claudine-secret`, which authenticates with a read-only service
-    account and caches in the macOS Keychain, so nothing is stored in cleartext
-    on disk and no 1Password prompt appears. Returns {} when the helper or the
-    vault is unavailable, leaving the interactive login path untouched.
-    """
+def auth_broker(operation: str, config: dict | None = None) -> dict:
+    """Use the shared vault broker without exposing credentials in arguments."""
     import shutil
     import subprocess
 
-    helper = shutil.which("claudine-secret") or str(Path.home() / ".local" / "bin" / "claudine-secret")
+    helper = shutil.which("claudine-secret") or str(Path.home() / ".local/bin/claudine-secret")
+    args = [helper, "auth", operation, "notion"]
+    if operation == "status":
+        args.append("--json")
     try:
-        result = subprocess.run([helper, "document", VAULT_DOCUMENT], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
+        result = subprocess.run(
+            args, input=json.dumps(config) if config is not None else None,
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode not in (0, 3) or not result.stdout.strip():
+            return {}
+        payload = json.loads(result.stdout)
+        if operation == "load" and result.returncode != 0:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
         return {}
-    if result.returncode != 0 or not result.stdout.strip():
-        return {}
-    return json.loads(result.stdout)
+
+
+def vault_config() -> dict:
+    """Prefer pending credentials and 1Password through the shared broker."""
+    # A login made while the broker was absent must not revert to stale vault data.
+    if CONFIG_PATH.with_suffix(".pending").exists() and CONFIG_PATH.exists():
+        return json.loads(CONFIG_PATH.read_text())
+    return auth_broker("load")
 
 
 def save_config(cfg: dict) -> None:
+    """Keep a protected working copy and sync successful login credentials."""
+    import os
+    import tempfile
+
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
-    # The file holds the session token — keep it out of reach of other users.
-    CONFIG_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    marker = CONFIG_PATH.with_suffix(".pending")
+    marker.touch(mode=0o600)
+    # Atomic replacement prevents truncated credentials after a crash.
+    descriptor, temporary = tempfile.mkstemp(prefix=".auth-", dir=CONFIG_PATH.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(json.dumps(cfg, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, CONFIG_PATH)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    metadata = auth_broker("save", cfg)
+    if metadata.get("source") == "vault" and not metadata.get("pending"):
+        marker.unlink(missing_ok=True)
+    else:
+        logging.getLogger(__name__).warning("Login saved locally; 1Password synchronization is pending.")
 
 
 # --------------------------------------------------------------------------
@@ -2686,6 +2717,40 @@ def resolve_discussion(discussion_id, reopen):
     ops = [op("discussion", did, ["resolved"], "set", not reopen, api.space_id)]
     api.transact(ops)
     click.echo(f"{'reopened' if reopen else 'resolved'} discussion {did}")
+
+
+@cli.command("auth-status")
+@click.option("--json", "as_json", is_flag=True, help="Return credential metadata without secrets.")
+def auth_status(as_json: bool) -> None:
+    """Inspect vault synchronization. Example: auth-status --json."""
+    metadata = auth_broker("status") or {
+        "connector": "notion", "account": "default", "source": "unavailable",
+        "configured": False, "pending": False, "last_sync": None,
+    }
+    metadata["legacy_available"] = CONFIG_PATH.exists()
+    if CONFIG_PATH.with_suffix(".pending").exists():
+        metadata.update(source="pending", pending=True, configured=CONFIG_PATH.exists())
+    click.echo(json.dumps(metadata) if as_json else
+               f"{metadata['source']}; pending={metadata['pending']}; local={metadata['legacy_available']}")
+
+
+@cli.command("auth-sync")
+def auth_sync() -> None:
+    """Retry pending vault sync or import local credentials. Example: auth-sync."""
+    # Broker pending data is newer than any compatibility copy.
+    config = vault_config()
+    if not config and CONFIG_PATH.exists():
+        config = json.loads(CONFIG_PATH.read_text())
+    if not config:
+        raise click.ClickException("No credentials available to synchronize; connect this tool in Brain.")
+    metadata = auth_broker("save", config)
+    if not metadata:
+        raise click.ClickException("Credential broker unavailable; local login is preserved.")
+    if metadata.get("source") == "vault" and not metadata.get("pending"):
+        CONFIG_PATH.with_suffix(".pending").unlink(missing_ok=True)
+    click.echo(json.dumps(metadata))
+    if metadata.get("pending"):
+        raise click.exceptions.Exit(3)
 
 
 if __name__ == "__main__":
