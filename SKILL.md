@@ -365,7 +365,9 @@ insert-at-position primitive. Consequences:
   empty result is not absence. `Owner=user://<id>` needs a Notion user id (a
   Slack `U…` id fails with `400 incomplete_ancestor_path`, which reads like a
   parent error). Fallback: `page <row> --raw` on a row the person already owns
-  and take the `u`-tagged segment. A profile page's `created_by_id` is its
+  and take the `u`-tagged segment, or grep `~/.config/notion-cli/cache/id_names.json`
+  (`users` bucket) for the name if any prior command already resolved it — no
+  extra API call. A profile page's `created_by_id` is its
   author, not its subject. A wrong id resolves silently — re-read
   `--props-only` after writing an Owner.
 - `create --md`: the TL;DR callout colour is only settable via
