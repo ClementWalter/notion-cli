@@ -308,6 +308,22 @@ notion delete-block <block_id>
 `edit <page> "old" "new"` matches raw rich-text runs, and the CLI has no
 insert-at-position primitive. Consequences:
 
+- **A multi-line `new` does not create sibling blocks.** It's appended as
+  literal newlines inside the one matched block, `## Heading` and `- [ ]` text
+  included — there is no markdown parsing on this path. `page` renders those
+  embedded newlines as if they were their own heading/bullet/to-do, so a
+  `page`-only re-read looks like a clean insert when the underlying block is
+  one run of text with `\n`s in it. Verify any edit that adds *new* lines
+  (not just changes an existing one) with `blocks <page> --depth 2..4`, not
+  `page`. To actually insert new blocks (a new section, new checklist items,
+  a new nested bullet), use `edit --section <heading> --md` — reconstruct the
+  full section (or, when the insertion point is nested under a non-heading
+  list item with no heading above it to target, the smallest enclosing real
+  heading) as markdown and pass the whole thing; the replacement is genuinely
+  parsed into blocks. `--section` matches only true heading blocks, so a
+  nested list item's own "heading-like" text (e.g. a numbered item titled
+  "Distribute the rewards") is not targetable — target its parent heading
+  instead and include every sibling in the `--md` payload.
 - **`old` must be plain text.** Bold markers, `[label](url)` brackets and a
   code span straddling runs are reconstructed from run metadata, not literal
   characters: such an anchor returns `no match` or
