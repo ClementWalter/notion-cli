@@ -325,6 +325,11 @@ insert-at-position primitive. Consequences:
   nested list item's own "heading-like" text (e.g. a numbered item titled
   "Distribute the rewards") is not targetable — target its parent heading
   instead and include every sibling in the `--md` payload.
+- **`new` may carry inline markdown.** A partial in-segment match splices
+  the parsed replacement in, so `@page(id)`, `@user(id)` and `[l](url)` land
+  as real mentions/links and inherit the matched run's formatting (bold,
+  italic). Verify with a direct `api.block(id)` read: a mention segment is
+  `["‣", [["p", id], ...]]`, never the literal `@page(` text.
 - **`old` must be plain text.** Bold markers, `[label](url)` brackets and a
   code span straddling runs are reconstructed from run metadata, not literal
   characters: such an anchor returns `no match` or

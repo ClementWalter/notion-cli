@@ -944,3 +944,17 @@ def test_an_unthrottled_endpoint_is_never_paced(retrying_api, monkeypatch):
     _queue(retrying_api, monkeypatch, [_StubResponse(200, payload={"ok": True})])
     retrying_api.post("syncRecordValues", {})
     assert retrying_api.slept == []
+
+
+def test_replace_in_segments_splices_page_mention_inside_bold_run():
+    from notion_cli import replace_in_segments
+
+    segs = [["USDC Prime cUSDC\nSteakhouse", [["b"]]], [" · hybrid"]]
+    got = replace_in_segments(segs, "USDC Prime cUSDC", f"@page({UUID})")
+    assert got == [["‣", [["p", UUID], ["b"]]], ["\nSteakhouse", [["b"]]], [" · hybrid"]]
+
+
+def test_replace_in_segments_keeps_plain_text_replacement_plain():
+    from notion_cli import replace_in_segments
+
+    assert replace_in_segments([["a 1,296,000 b"]], "1,296,000", "1,335,000") == [["a 1,335,000 b"]]
