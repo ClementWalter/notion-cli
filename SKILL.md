@@ -124,7 +124,8 @@ notion search "Clément" --created-after 2026-08-01   # client-side filter on cr
 notion comments <page_id>      # every page-level + inline discussion, open AND resolved (public API
                                # hides resolved): [OPEN]/[resolved], anchored block id, author, datetime
 notion comments <page_id> --open-only
-notion users [query]           # space permission grants (name, email, id) — NOT every member
+notion users [query]           # space permission grants (name, email, id) — NOT every member; can be empty —
+                               # then `resolve` an id already seen in a page, query or prior output
 notion resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
 notion blocks <page_id>        # child block ids (targets for edit/check/delete-block); default depth 1
                                # — keep it there on long pages, see Gotchas
