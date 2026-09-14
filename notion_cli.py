@@ -767,6 +767,41 @@ def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
     return segs
 
 
+def replace_in_segments(segs: list, old: str, new: str) -> list:
+    """Replace `old` inside text segments, parsing `new` as inline markdown.
+
+    The matched segment is split around `old` and the parsed replacement is
+    spliced in, so `@page(id)` / `@user(id)` / `[l](url)` become real mentions
+    and links instead of literal text. The segment's own formatting (bold,
+    italic, ...) is inherited by every spliced segment.
+    """
+    out: list = []
+    for seg in segs:
+        if not seg or seg[0] in ("‣", "⁍") or old not in seg[0]:
+            out.append(seg)
+            continue
+        fmt = seg[1] if len(seg) > 1 else []
+        parts = seg[0].split(old)
+        for i, part in enumerate(parts):
+            if part:
+                out.append([part, fmt] if fmt else [part])
+            if i < len(parts) - 1:
+                for ns in md_to_segments(new):
+                    ns_fmt = ns[1] if len(ns) > 1 else []
+                    merged = ns_fmt + [f for f in fmt if f not in ns_fmt]
+                    out.append([ns[0], merged] if merged else [ns[0]])
+    # Coalesce adjacent plain-text runs sharing a format so a text-only
+    # replacement leaves the segment list as Notion itself would store it.
+    merged_out: list = []
+    for seg in out:
+        prev = merged_out[-1] if merged_out else None
+        if prev and prev[0] not in ("‣", "⁍") and seg[0] not in ("‣", "⁍") and prev[1:] == seg[1:]:
+            prev[0] += seg[0]
+        else:
+            merged_out.append(list(seg))
+    return merged_out
+
+
 # --------------------------------------------------------------------------
 # blocks -> compact markdown
 # --------------------------------------------------------------------------
@@ -2552,7 +2587,7 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
             if (bid, key) in whole:
                 new_segs = md_to_segments(new)
             else:
-                new_segs = [[seg[0].replace(old, new), *seg[1:]] if seg and seg[0] not in ("‣", "⁍") else seg for seg in segs]
+                new_segs = replace_in_segments(segs, old, new)
             ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
         api.transact(ops)
