@@ -427,6 +427,10 @@ insert-at-position primitive. Consequences:
   has exactly one table with the same column count, rows are merged into it.
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
+- HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
+  `ReadTimeout` after the write has already been submitted. The exception says
+  nothing about whether it landed: re-read the page before retrying, never
+  fire the same write again blind.
 - The client honors `Retry-After` and backs off on 429/5xx. If Notion
   omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s). Only `loadPageChunk`
   is paced client-side; other reads are single un-throttled v3 calls, so a
