@@ -351,7 +351,11 @@ insert-at-position primitive. Consequences:
   is nested inside it, the new blocks land as siblings and the old children stay,
   so the page shows both. Check `blocks <page> --depth 2` first; when the
   content is indented under the heading, `delete-block` each child id after the
-  rewrite. Nested `###` headings are not matchable by `--section` at all. When
+  rewrite. Nested `###` headings are not matchable by `--section` at all, and a
+  `## Heading` section rewrite runs **through** any `###` sub-sections below it
+  up to the next `##`: they are deleted with the rest, silently. When a `##`
+  section carries `###` children, `rewrite` the whole body (from a `--write`
+  render) instead of `--section`. When
   no heading follows the section, trailing non-heading content (dividers,
   footnotes) can be swallowed: re-read the full page after and re-append
   anything lost.
