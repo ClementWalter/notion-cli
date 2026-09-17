@@ -246,6 +246,9 @@ MD
 notion edit <page> "1,296,000" "1,335,000"
 notion edit <page> -- "- [ ] ship it" "- [ ] ship it by Friday"
 notion edit <page> --section "1. What" --md what.md
+# --md is a PATH (or '-' for stdin), never inline markdown: passing the text
+# itself fails with `OSError: File name too long`, which reads like a bug and
+# is not. `--body` is the inline form of the same payload.
 notion edit <page> --section "2. Crew" --md - <<'MD'
 | Role | Owner |
 |---|---|
@@ -351,11 +354,13 @@ insert-at-position primitive. Consequences:
   is nested inside it, the new blocks land as siblings and the old children stay,
   so the page shows both. Check `blocks <page> --depth 2` first; when the
   content is indented under the heading, `delete-block` each child id after the
-  rewrite. Nested `###` headings are not matchable by `--section` at all, and a
-  `## Heading` section rewrite runs **through** any `###` sub-sections below it
-  up to the next `##`: they are deleted with the rest, silently. When a `##`
-  section carries `###` children, `rewrite` the whole body (from a `--write`
-  render) instead of `--section`. When
+  rewrite. A `###` heading *is* matchable by `--section` and replaces only its
+  own siblings up to the next heading of any level, so a `### Slack channels`
+  list under a `## See also` is editable on its own. A `## Heading` rewrite, by
+  contrast, runs **through** any `###` sub-sections below it up to the next
+  `##`: they are deleted with the rest, silently. So to touch one sub-list
+  under a `##`, target its `###`; only when the whole `##` must change does
+  `rewrite` of the full body (from a `--write` render) beat `--section`. When
   no heading follows the section, trailing non-heading content (dividers,
   footnotes) can be swallowed: re-read the full page after and re-append
   anything lost.
