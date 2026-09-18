@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests", "click", "pycryptodome"]
+# dependencies = ["requests", "click", "pycryptodome", "pyyaml"]
 # ///
 """Token-efficient Notion CLI on the session-token (v3) API.
 
@@ -1674,20 +1674,46 @@ def _bind_and_save(token: str, space: str | None) -> None:
         idx = click.prompt("pick a space", type=int)
         candidates = [candidates[idx]]
     uid, sid, name = candidates[0]
-    save_config({"token_v2": token, "user_id": uid, "space_id": sid, "space_name": name})
+    existing = load_config()
+    save_config({**existing, "token_v2": token, "user_id": uid, "space_id": sid, "space_name": name})
     click.echo(f"ok: bound to space {name!r} ({sid}) as user {uid}")
+
+
+def _store_pat(api_key: str | None) -> None:
+    """Validate and persist an official-API personal access token."""
+    from agent_iac import PublicApi
+
+    if not api_key:
+        api_key = click.prompt("personal access token (ntn_…)", hide_input=True)
+    api_key = api_key.strip()
+    if not api_key:
+        raise click.ClickException("empty token")
+    me = PublicApi({}, api_key=api_key).me()
+    cfg = load_config()
+    cfg["api_key"] = api_key
+    save_config(cfg)
+    label = me.get("name") or me.get("id") or "ok"
+    click.echo(f"ok: stored official API token (as {label})")
 
 
 @cli.command()
 @click.option("--token", "token", default=None, help="token_v2 cookie value (v03:…)")
 @click.option("--import", "import_", is_flag=True, help=f"reuse the token stored in {LEGACY_TOKEN_PATH}")
 @click.option("--space", default=None, help="workspace name to bind (when the account has several)")
-def auth(token, import_, space):
+@click.option("--pat", is_flag=True, help="store a personal access token for the official Agents API")
+@click.option("--api-key", "api_key", default=None, help="PAT value (ntn_…). Implies --pat")
+def auth(token, import_, space, pat, api_key):
     """Store a token_v2 you provide (pasted or imported) and bind it.
 
     Get the cookie from a logged-in browser: devtools → Application → Cookies
     → https://www.notion.so → token_v2. For automatic extraction see `login`.
+    Add `--pat` to store an official API personal access token. Optional:
+    `agents` uses the session cookie. A PAT is only needed for credit_limit.
     """
+    if pat or api_key:
+        _store_pat(api_key)
+        if not token and not import_:
+            return
     if import_:
         if not LEGACY_TOKEN_PATH.exists():
             raise click.ClickException(f"nothing to import at {LEGACY_TOKEN_PATH}")
@@ -1813,12 +1839,20 @@ def login(source, space):
 
 @cli.command()
 def whoami():
-    """Show the bound user and workspace."""
+    """Show the bound user, workspace, and optional official API token."""
     cfg = load_config()
-    api = Api(cfg)
-    users = api.records("notion_user", [cfg["user_id"]])
-    u = users.get(cfg["user_id"], {})
-    click.echo(f"{u.get('name', cfg['user_id'])} <{u.get('email', '?')}> — space {cfg.get('space_name')} ({cfg.get('space_id')})")
+    if cfg.get("token_v2") or os.environ.get("NOTION_TOKEN_V2"):
+        api = Api(cfg)
+        users = api.records("notion_user", [cfg.get("user_id")])
+        u = users.get(cfg.get("user_id"), {})
+        session = (
+            f"{u.get('name', cfg.get('user_id'))} <{u.get('email', '?')}> "
+            f"— space {cfg.get('space_name')} ({cfg.get('space_id')})"
+        )
+    else:
+        session = "session: missing (run `notion login` or `notion auth`)"
+    key = os.environ.get("NOTION_API_KEY") or cfg.get("api_key")
+    click.echo(f"{session} — api_key: {'set' if key else 'missing (optional; agents use session)'}")
 
 
 @cli.group("cache")
@@ -1883,7 +1917,14 @@ def page(ref, props_only, no_props, depth, as_json, raw, writeable, no_cache):
     """Render a page: flattened properties + body as compact markdown."""
     api = api_or_die()
     pid = parse_id(ref)
-    blk = api.block(pid)
+    try:
+        blk = api.block(pid)
+    except click.ClickException as exc:
+        if "/agent/" in ref:
+            raise click.ClickException(
+                f"{pid} is a Custom Agent, not a page. Use `notion agents get {ref}`."
+            ) from exc
+        raise
     if raw:
         click.echo(json.dumps(blk, indent=2, ensure_ascii=False))
         return
@@ -2622,16 +2663,8 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
     click.echo(f"replaced table markdown in {n_tables} table(s)")
 
 
-@cli.command()
-@click.argument("page_ref")
-@click.option("--md", "md_file", help="markdown file ('-' = stdin)")
-@click.option("--body", help="inline markdown")
-@click.option("--force", is_flag=True, help="also remove collection embeds")
-def rewrite(page_ref, md_file, body, force):
-    """Replace a page's body with markdown. Keeps the page and its properties."""
-    api = api_or_die()
-    pid = parse_id(page_ref)
-    md = _read_md(md_file, body)
+def rewrite_page_body(api: Api, pid: str, md: str, *, force: bool = False) -> int:
+    """Replace a page's body with markdown. Returns new top-level block count."""
     tables = api.load_page(pid)
     blks = tables.get("block", {})
     root = blks.get(pid, {})
@@ -2647,7 +2680,20 @@ def rewrite(page_ref, md_file, body, force):
     ops += child_ops
     ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
     api.transact(ops)
-    click.echo(f"rewrote {page_url(pid)} ({len(top)} block(s))")
+    return len(top)
+
+
+@cli.command()
+@click.argument("page_ref")
+@click.option("--md", "md_file", help="markdown file ('-' = stdin)")
+@click.option("--body", help="inline markdown")
+@click.option("--force", is_flag=True, help="also remove collection embeds")
+def rewrite(page_ref, md_file, body, force):
+    """Replace a page's body with markdown. Keeps the page and its properties."""
+    api = api_or_die()
+    pid = parse_id(page_ref)
+    n = rewrite_page_body(api, pid, _read_md(md_file, body), force=force)
+    click.echo(f"rewrote {page_url(pid)} ({n} block(s))")
 
 
 def trash_block(api: Api, block_ref: str) -> str:
@@ -2786,6 +2832,284 @@ def auth_sync() -> None:
     click.echo(json.dumps(metadata))
     if metadata.get("pending"):
         raise click.exceptions.Exit(3)
+
+
+def public_api_or_none():
+    """PAT client when one is stored; agents themselves use the session."""
+    from agent_iac import PublicApi
+    try:
+        return PublicApi(load_config())
+    except click.ClickException:
+        return None
+
+
+def _read_instruction_page(api: Api, page_id: str) -> str:
+    blk = api.block(page_id)
+    return render_page_body(
+        api, page_id, 6, writeable=True, last_edited_time=blk.get("last_edited_time"),
+    )
+
+
+def _index_live_agents(agents: list[dict]) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    by_id = {a["id"]: a for a in agents if a.get("id")}
+    by_name: dict[str, list[str]] = {}
+    for a in agents:
+        name = a.get("name")
+        if name and a.get("id"):
+            by_name.setdefault(name, []).append(a["id"])
+    return by_id, by_name
+
+
+@cli.group("agents")
+def agents_cmd():
+    """List, create, export, and apply Custom Agent settings (session cookie).
+
+    Same `token_v2` as pages: the web client stores agents as `workflow`
+    records. Creates agents and writes name, model, connections, triggers,
+    status, and the instructions page. credit_limit still needs a PAT.
+    """
+
+
+@agents_cmd.command("list")
+@click.option("--query", "q", default=None, help="case-insensitive name/description substring")
+@click.option("--all-types", is_flag=True, help="include autofill agents, not just custom_agent")
+@click.option("--include-deleted", is_flag=True)
+@click.option("--json", "as_json", is_flag=True)
+def agents_list(q, all_types, include_deleted, as_json):
+    """List Custom Agents the session can see. One compact line each."""
+    from agent_iac import format_agent_line, list_session_agents
+
+    rows = list_session_agents(api_or_die(), query=q, include_deleted=include_deleted)
+    _ = all_types  # session list is custom agents only
+    if as_json:
+        click.echo(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    for row in rows:
+        click.echo(format_agent_line(row))
+
+
+@agents_cmd.command("get")
+@click.argument("ref")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--raw", is_flag=True, help="untouched retrieve-agent JSON")
+@click.option("--verbose/--no-verbose", default=True, show_default=True)
+def agents_get(ref, as_json, raw, verbose):
+    """Show one Custom Agent. Accepts an id or https://app.notion.com/agent/… URL."""
+    from agent_iac import format_agent_text, get_session_agent, get_workflow_record, parse_agent_id
+
+    api = api_or_die()
+    aid = parse_agent_id(ref, parse_id)
+    if raw:
+        click.echo(json.dumps(get_workflow_record(api, aid), ensure_ascii=False, indent=2))
+        return
+    agent = get_session_agent(api, aid)
+    _ = verbose
+    if as_json:
+        click.echo(json.dumps(agent, ensure_ascii=False, indent=2))
+        return
+    instructions = None
+    page_id = agent.get("instructions_page_id")
+    if page_id:
+        try:
+            instructions = _read_instruction_page(api, page_id)
+        except click.ClickException as exc:
+            log.warning("could not read instructions page %s: %s", page_id, exc)
+    click.echo(format_agent_text(agent, instructions=instructions))
+
+
+def _export_agents(dest: Path, refs: tuple[str, ...], query: str | None, all_types: bool) -> None:
+    from agent_iac import (
+        agent_to_manifest,
+        dump_yaml,
+        load_agent_state,
+        normalize_md,
+        get_session_agent,
+        list_session_agents,
+        parse_agent_id,
+        save_agent_state,
+        unique_slug,
+    )
+
+    dest.mkdir(parents=True, exist_ok=True)
+    api = api_or_die()
+    _ = all_types
+    if refs:
+        agents = [get_session_agent(api, parse_agent_id(r, parse_id)) for r in refs]
+    else:
+        agents = list_session_agents(api, query=query)
+    state = load_agent_state(dest)
+    id_to_slug = {v.get("id"): k for k, v in state.get("agents", {}).items() if isinstance(v, dict) and v.get("id")}
+    used: set[str] = set()
+    for agent in agents:
+        aid = agent.get("id")
+        slug = id_to_slug.get(aid) or unique_slug(agent.get("name") or aid or "agent", used)
+        used.add(slug)
+        md = None
+        md_name = None
+        page_id = agent.get("instructions_page_id")
+        if page_id:
+            try:
+                md = _read_instruction_page(api, page_id)
+            except click.ClickException as exc:
+                log.warning("could not read instructions page %s: %s", page_id, exc)
+        if md is not None:
+            md_name = f"{slug}.md"
+            (dest / md_name).write_text(normalize_md(md), encoding="utf-8")
+        dump_yaml(dest / f"{slug}.yaml", agent_to_manifest(agent, slug, md_name))
+        state.setdefault("agents", {})[slug] = {
+            "id": aid,
+            "instructions_page_id": page_id,
+            "name": agent.get("name"),
+        }
+        click.echo(f"exported {slug}\t{aid}")
+    save_agent_state(dest, state)
+
+
+@agents_cmd.command("export")
+@click.argument("dest", type=click.Path())
+@click.option("--id", "refs", multiple=True, help="restrict to these agent ids/URLs (repeatable)")
+@click.option("--query", "q", default=None)
+@click.option("--all-types", is_flag=True)
+def agents_export(dest, refs, q, all_types):
+    """Write live agent settings to DEST as yaml + instruction markdown."""
+    _export_agents(Path(dest), refs, q, all_types)
+
+
+@agents_cmd.command("pull")
+@click.argument("dest", type=click.Path())
+@click.option("--id", "refs", multiple=True)
+@click.option("--query", "q", default=None)
+@click.option("--all-types", is_flag=True)
+def agents_pull(dest, refs, q, all_types):
+    """Refresh manifests from live (alias for export)."""
+    _export_agents(Path(dest), refs, q, all_types)
+
+
+def _plan_from_dir(src: Path):
+    from agent_iac import (
+        format_diffs,
+        iter_manifest_paths,
+        get_session_agent,
+        list_session_agents,
+        load_agent_state,
+        load_manifest,
+        plan_agent,
+        resolve_live_id,
+    )
+
+    paths = iter_manifest_paths(src)
+    if not paths:
+        raise click.ClickException(f"no .yaml/.yml manifests in {src}")
+    api = api_or_die()
+    listed = list_session_agents(api, include_deleted=True)
+    live_by_id, live_by_name = _index_live_agents(listed)
+    state = load_agent_state(src if src.is_dir() else src.parent)
+    planned = []
+    for path in paths:
+        spec, desired_md = load_manifest(path)
+        aid = resolve_live_id(spec, state, live_by_id, live_by_name)
+        live = None
+        live_md = None
+        if aid:
+            live = get_session_agent(api, aid)
+            page_id = live.get("instructions_page_id")
+            if page_id:
+                try:
+                    live_md = _read_instruction_page(api, page_id)
+                except click.ClickException as exc:
+                    log.warning("could not read instructions page %s: %s", page_id, exc)
+        diffs = plan_agent(spec, live, desired_md, live_md)
+        planned.append((spec.get("slug") or path.stem, aid, spec, desired_md, live, diffs))
+        click.echo(format_diffs(spec.get("slug") or path.stem, aid, diffs))
+    return planned
+
+
+@agents_cmd.command("plan")
+@click.argument("src", type=click.Path(exists=True))
+def agents_plan(src):
+    """Diff desired-state yaml in SRC against live agents. No writes."""
+    _plan_from_dir(Path(src))
+
+
+@agents_cmd.command("apply")
+@click.argument("src", type=click.Path(exists=True))
+def agents_apply(src):
+    """Create agents and apply settings (name, model, connections, triggers, status, instructions).
+
+    credit_limit still needs a PAT. Soft-delete is not done here.
+    """
+    from agent_iac import (
+        WORKFLOW_DATA_PATH,
+        agent_url,
+        load_agent_state,
+        new_workflow_records,
+        save_agent_state,
+        workflow_write_value,
+    )
+
+    api = api_or_die()
+    public = public_api_or_none()
+    src_path = Path(src)
+    planned = _plan_from_dir(src_path)
+    state_dir = src_path if src_path.is_dir() else src_path.parent
+    state = load_agent_state(state_dir)
+    applied = 0
+    skipped = 0
+    for slug, aid, spec, desired_md, live, diffs in planned:
+        for d in diffs:
+            if d.field == "agent" and d.action == "create":
+                aid = spec.get("id") or str(uuidlib.uuid4())
+                page_id = str(uuidlib.uuid4())
+                wf, page = new_workflow_records(
+                    workflow_id=aid, page_id=page_id, space_id=api.space_id,
+                    user_id=api.user_id, spec=spec, now=now_ms(),
+                )
+                api.transact([
+                    op("workflow", aid, [], "set", wf, api.space_id),
+                    op("block", page_id, [], "set", page, api.space_id),
+                ])
+                live = {**(live or {}), "id": aid, "instructions_page_id": page_id}
+                spec["id"] = aid
+                state.setdefault("agents", {})[slug] = {
+                    "id": aid, "instructions_page_id": page_id, "name": spec.get("name"),
+                }
+                save_agent_state(state_dir, state)
+                click.echo(f"created {slug}\t{agent_url(aid)}")
+                applied += 1
+                continue
+            if d.action == "noop":
+                continue
+            if d.action in {"unsupported", "skip"}:
+                skipped += 1
+                continue
+            if d.field in WORKFLOW_DATA_PATH:
+                if not aid:
+                    raise click.ClickException(f"{slug}: no live agent id to update {d.field}")
+                api.transact([
+                    op("workflow", aid, WORKFLOW_DATA_PATH[d.field], "set",
+                       workflow_write_value(d.field, d.after), api.space_id),
+                    op("workflow", aid, [], "update", {"last_edited_time": now_ms()}, api.space_id),
+                ])
+                shown = d.after if d.field in {"name", "status"} else None
+                click.echo(f"applied {slug}.{d.field}={shown}" if shown is not None else f"applied {slug}.{d.field}")
+                applied += 1
+            elif d.field == "credit_limit":
+                if public is None:
+                    click.echo(f"skipped {slug}.credit_limit — needs `notion auth --pat`")
+                    skipped += 1
+                    continue
+                public.set_credit_limit(aid, d.after)
+                click.echo(f"applied {slug}.credit_limit={d.after}")
+                applied += 1
+            elif d.field == "instructions":
+                page_id = (live or {}).get("instructions_page_id")
+                if not page_id:
+                    raise click.ClickException(f"{slug}: no instructions page to rewrite")
+                n = rewrite_page_body(api, page_id, desired_md or "")
+                click.echo(f"applied {slug}.instructions → {page_url(page_id)} ({n} block(s))")
+                applied += 1
+    save_agent_state(state_dir, state)
+    click.echo(f"applied {applied} change(s); skipped {skipped} unsupported/hidden")
 
 
 # Provider commands share the same execution policy as the app and MCP.

@@ -10,7 +10,8 @@ description: >
   (compact markdown, signed URLs stripped, --select projection); output is
   pipeable through jq/python so only the projection you need enters context.
   Triggers: "read notion page", "query notion database", "notion cli",
-  "update notion row", "create notion page".
+  "update notion row", "create notion page", "notion agents",
+  "export notion agents".
 ---
 
 # Notion CLI
@@ -74,6 +75,10 @@ content, is actually missing auth context. `whoami` verifies the binding.
 Tokens survive ~1 year unless the user logs out; a `401 — token_v2 expired`
 means re-grab the cookie and re-run `auth`.
 
+Custom Agents (`/agent/{id}` URLs) use the same `token_v2` session as pages
+(`getCustomAgents` + `workflow` records). A PAT is optional and only needed
+to read/write `credit_limit`.
+
 ## Output conventions
 
 - Default output is compact text, one line per row/property — designed to be
@@ -131,7 +136,19 @@ notion blocks <page_id>        # child block ids (targets for edit/check/delete-
                                # — keep it there on long pages, see Gotchas
 notion cache stats                 # rendered-body cache: entries, pages, size
 notion cache clear [<page> ...]    # drop cached bodies (all, or just these pages)
+
+# Custom Agents — same session cookie as pages. `/agent/{id}` is not a page.
+notion agents list
+notion agents get https://app.notion.com/agent/<id>
+notion agents export agents/          # live → yaml + instruction .md + .state.json
+notion agents plan  agents/           # diff only
+notion agents apply agents/           # create + name/model/connections/triggers/status/instructions
 ```
+
+`agents apply` creates missing agents (workflow + instructions page) and
+writes **name**, **model**, **connections**, **triggers**, **status**, and
+the **instructions page**. `credit_limit` still needs a PAT. Soft-delete
+is not done here.
 
 **Prefer `resolve <id>` over re-running `users "<name>"`** to look up a
 single id — `users` re-fetches the *entire* workspace member list every

@@ -53,6 +53,7 @@ USER = "99aa88bb-77cc-46dd-55ee-44ff33aa22bb"
         UUID.replace("-", ""),
         f"https://www.notion.so/myworkspace/Some-Page-{UUID.replace('-', '')}",
         f"https://app.notion.com/p/{UUID.replace('-', '')}",
+        f"https://app.notion.com/agent/{UUID.replace('-', '')}?wfv=chat",
         f"collection://{UUID}",
         f"https://www.notion.so/{UUID.replace('-', '')}?v=647ad414a07146c88c70a3953901139c",
     ],
