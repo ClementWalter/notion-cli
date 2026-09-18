@@ -20,7 +20,7 @@ READS = {
     "email": {"accounts", "mailboxes", "list", "search", "read", "attachments", "auth status"},
     "slack": {"whoami", "workspaces", "channels", "read", "thread", "search", "users", "info", "canvas", "download", "permalink", "resolve", "resolve-name"},
     "gdrive": {"whoami", "auth list", "auth status", "drive search", "drive ls", "drive get", "drive comments", "drive download", "docs read", "sheets read", "sheets info"},
-    "notion": {"whoami", "search", "page", "pages", "query", "comments", "resolve", "schema", "templates", "users"},
+    "notion": {"whoami", "search", "page", "pages", "query", "comments", "resolve", "schema", "templates", "users", "agents list", "agents get", "agents export", "agents pull", "agents plan"},
     "deezer": {"whoami", "album", "artist", "artist-radio", "artist-related", "artist-top", "chart", "download", "export-likes", "flow", "genres", "history", "likes", "playlist", "playlists", "resolve", "search", "track"},
     "ecoledirecte": {"whoami", "contacts", "download", "homework", "messages", "notes", "read", "timetable"},
     "rentalready": {"whoami", "doctor", "overview", "profile", "projection", "property", "reservations"},

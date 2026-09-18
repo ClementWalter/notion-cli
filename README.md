@@ -87,12 +87,16 @@ notion login --source arc --space "My Workspace"
 # Paste token_v2 manually (browser devtools → Application → Cookies →
 # notion.so → token_v2)
 notion auth
+
+# Optional official API PAT — only needed for agent credit_limit
+notion auth --pat
 ```
 
 `login`/`auth` bind a (user, workspace) pair — required because a session that
 knows several accounts gets empty results without the right active-user
 header. `notion whoami` shows the current binding. Session tokens live ~1 year
 unless you log out; on `401 — token_v2 expired`, just `login` again.
+`$NOTION_API_KEY` overrides a stored PAT.
 
 ## Usage
 
@@ -113,6 +117,10 @@ notion search "quarterly launch plan"
 notion comments <page>                     # discussions INCL. resolved ones
 notion users [query]
 notion resolve <id> [<id> ...]              # id -> name/title, cached locally, no full listing
+notion agents list                          # Custom Agents (session cookie; /agent/{id} is not a page)
+notion agents get https://app.notion.com/agent/<id>
+notion agents export agents/                # yaml + instruction markdown
+notion agents plan agents/ && notion agents apply agents/   # create + name/model/connections/triggers
 
 # Write
 notion create --parent <db> --prop 'Title=New row' --prop 'Status=Triage' \
@@ -209,7 +217,7 @@ auto-increment IDs, formula/rollup limits).
 ## Running tests
 
 ```bash
-uv run --with pytest --with click --with requests --with pycryptodome -- pytest tests/ -q
+uv run --with pytest --with click --with requests --with pycryptodome --with pyyaml -- pytest tests/ -q
 ```
 
 Tests cover the pure conversion layers (segment rendering, markdown parsing,
