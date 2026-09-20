@@ -359,8 +359,10 @@ insert-at-position primitive. Consequences:
   (Click option parsing).
 - **A plain-text prefix of a bullet that continues into a link matches only
   that prefix.** The bullet's tail is stitched onto `new` with no separator
-  while `edit` still reports `replaced in 1 block(s)`. Re-read any edited line
-  that carries a link.
+  while `edit` still reports `replaced in 1 block(s)`. The tail's own
+  punctuation stays too, so `new` has to leave it balanced — a rewrite that
+  drops the opening parenthesis of `(following [link])` leaves a stray `)`.
+  Re-read any edited line that carries a link.
 - **Link hrefs are never rewritten.** Matching the visible label relabels it
   only; matching the URL fails. To redirect a link, append a corrected one.
 - **A heading's own text is a whole-block match.** A multi-paragraph `new`
