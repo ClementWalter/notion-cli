@@ -2597,7 +2597,7 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
     formatting boundary is reported instead of mangled.
 
     All block properties are searched, not just `title` — so table cells
-    match. If `old` is a snippet of the table as `page` renders it (GFM),
+    match. If `old` is a snippet of the table as `page --write` renders it (GFM),
     the table is rewritten (insert/delete/update rows) to match `new`.
     Mentions match as `page` renders them (`@Ada`). Prefer --section over
     guessing the current paragraph; on no match, edit prints a short preview.
@@ -2640,7 +2640,9 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
     for bid, b in blks.items():
         if b.get("type") != "table" or not b.get("alive", True):
             continue
-        rendered = "\n".join(_render_table(api, b, blks, names, ""))
+        # Writeable render so mentions/link chips round-trip as `@page(id)`, `@user(id)`,
+        # `@[label](url)` through md_to_segments instead of degrading to plain links.
+        rendered = "\n".join(_render_table(api, b, blks, names, "", writeable=True))
         n = rendered.count(old)
         if n:
             table_hits.append((bid, b, rendered, n))
