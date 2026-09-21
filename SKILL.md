@@ -256,7 +256,8 @@ MD
 
 # In-place text replace (preserves formatting; unique match required unless --all).
 # Searches every property, including table cells — not just block titles.
-# A unique snippet of the table as `page` renders it rewrites rows (insert/delete/update).
+# A unique snippet of the table as `page --write` renders it rewrites rows (insert/delete/update);
+# mention cells (`@page(id)`) survive the rewrite, a plain `page` render does not match.
 # Mentions match as `page` renders them (`@Ada`). Prefer --section over guessing
 # the current paragraph; on no match, edit prints a short page preview.
 # Anchor on plain text; `--` when old/new start with '-'. See "Editing bodies safely".
@@ -383,8 +384,9 @@ insert-at-position primitive. Consequences:
   no heading follows the section, trailing non-heading content (dividers,
   footnotes) can be swallowed: re-read the full page after and re-append
   anything lost.
-- **Tables:** match a snippet exactly as `page` renders it and pass the same
-  snippet plus the new rows as `new`. Inserting before a trailing total row,
+- **Tables:** match a snippet exactly as `page --write` renders it (a mention
+  cell is `@page(id)`, not `[page](url)`) and pass the same snippet plus the new
+  rows as `new`. Inserting before a trailing total row,
   backfilling mid-table and adding several rows in one call all work this way.
 - **Checkboxes** are not text: `edit` cannot reach them. Use
   `check <block_id> [--uncheck]` with an id from `blocks <page>` at default
@@ -476,5 +478,5 @@ insert-at-position primitive. Consequences:
 ## Tests
 
 ```bash
-uv run --with pytest --with click --with requests -- pytest tests/ -q
+uv run --with pytest --with click --with requests --with pyyaml -- pytest tests/ -q
 ```
