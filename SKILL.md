@@ -419,7 +419,9 @@ insert-at-position primitive. Consequences:
   parent error). Fallback: `page <row> --raw` on a row the person already owns
   and take the `u`-tagged segment, or grep `~/.config/notion-cli/cache/id_names.json`
   (`users` bucket) for the name if any prior command already resolved it — no
-  extra API call. A profile page's `created_by_id` is its
+  extra API call. Where the Notion MCP is connected, `notion-get-users` with a
+  `query` returns name, email and id directly and is the one lookup that does
+  not depend on a prior read. A profile page's `created_by_id` is its
   author, not its subject. A wrong id resolves silently, and even a correct
   cached uuid (`user://<id>` or bare `<id>`) has silently no-op'd on `update
   --prop 'Owner=…'` while reporting success — the cached display name
