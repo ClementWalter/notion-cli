@@ -453,6 +453,12 @@ insert-at-position primitive. Consequences:
   and can splice the GFM `page` renders for a table to insert/delete rows.
   `append` of a `| table |` creates a real Notion table; if the page already
   has exactly one table with the same column count, rows are merged into it.
+  A `table_row` that carries `crdt_format_version` rejects any cell write,
+  whether a single `properties.<col>` set or the whole `properties` dict, with
+  `400 … Block property value updates must use high-level property
+  operations`. Such a table's cells are edited through the Notion MCP
+  `notion-update-page` `update_content`, where `old_str` is a unique
+  `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
