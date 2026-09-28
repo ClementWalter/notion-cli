@@ -959,3 +959,14 @@ def test_replace_in_segments_keeps_plain_text_replacement_plain():
     from notion_cli import replace_in_segments
 
     assert replace_in_segments([["a 1,296,000 b"]], "1,296,000", "1,335,000") == [["a 1,335,000 b"]]
+
+
+def test_http_error_message_leads_with_debug_message():
+    body = '{"clientData": {"rollbackRecordMap": {"block": {}}}, "debugMessage": "Unsaved transactions: Block property value updates must use high-level property operations."}'
+    assert notion_cli.http_error_message(400, "saveTransactionsFanout", body) == (
+        "400 on saveTransactionsFanout: Unsaved transactions: Block property value updates must use high-level property operations."
+    )
+
+
+def test_http_error_message_falls_back_to_body_prefix():
+    assert notion_cli.http_error_message(502, "loadPageChunk", "<html>bad gateway</html>") == "502 on loadPageChunk: <html>bad gateway</html>"

@@ -470,7 +470,7 @@ class Api:
             if resp.status_code == 401:
                 raise click.ClickException("401 — token_v2 expired; re-run `auth`")
             if not resp.ok:
-                raise click.ClickException(f"{resp.status_code} on {path}: {resp.text[:300]}")
+                raise click.ClickException(http_error_message(resp.status_code, path, resp.text))
             return resp.json()
         raise click.ClickException(f"still failing after {retries} retries: {path}")
 
@@ -535,6 +535,20 @@ class Api:
                 ],
             },
         )
+
+
+def http_error_message(status: int, path: str, text: str) -> str:
+    """One-line error for a failed API call, leading with Notion's `debugMessage`.
+
+    The raw body opens with a large rollbackRecordMap, so the only field that
+    names the cause sits past any fixed-length prefix."""
+    try:
+        debug = json.loads(text).get("debugMessage")
+    except (ValueError, AttributeError):
+        debug = None
+    if debug:
+        return f"{status} on {path}: {debug}"
+    return f"{status} on {path}: {text[:300]}"
 
 
 def unwrap(wrap: Any) -> dict:
