@@ -369,6 +369,10 @@ insert-at-position primitive. Consequences:
 - **A heading's own text is a whole-block match.** A multi-paragraph `new`
   anchored on a heading lands inside the heading block, silently. Never anchor
   an insertion on a heading; `append` to the end or use `--section`.
+- **`edit --section <heading> --md` keeps the heading block itself**: the
+  payload is the section's content only. A payload that starts with the same
+  `## Heading` lands as a second heading under the kept one, and the page shows
+  it twice; `delete-block` the duplicate from `blocks <page>`.
 - **`edit --section <heading> --md` rewrites the heading's sibling blocks up
   to the next heading**, never its children: on a toggle heading whose content
   is nested inside it, the new blocks land as siblings and the old children stay,
