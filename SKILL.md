@@ -459,6 +459,11 @@ insert-at-position primitive. Consequences:
   operations`. Such a table's cells are edited through the Notion MCP
   `notion-update-page` `update_content`, where `old_str` is a unique
   `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
+  The same 400 hits `check` on a CRDT `to_do` block and `update --prop` on a
+  CRDT database row, while `edit` on their text still works. The MCP route
+  covers both: `update_content` with `old_str` = the `- [ ] <first words>`
+  prefix (a trailing mention in `old_str` does not match), and
+  `update_properties` for the property. Both keep the block ids.
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
