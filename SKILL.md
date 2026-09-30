@@ -356,6 +356,13 @@ insert-at-position primitive. Consequences:
   characters: such an anchor returns `no match` or
   `match spans formatting boundaries`. Anchor on a bare word or date and narrow
   from there.
+- **Mention segments are not searchable text.** A page mention (`@page(id)`,
+  rendered `[Title](url)`) and a link-mention chip's label (`@[label](url)`,
+  stored as the `lm` title) never match `old` in any form. To repoint a page
+  mention, use the Notion MCP `notion-update-page` `update_content` with
+  `old_str` = the `<mention-page url="…"/>` tag as `notion-fetch` renders it.
+  To relabel a chip, `delete-block` its bullet and `append` a new
+  `@[label](url)` line.
 - **`old`/`new` starting with `-`** (a `- [ ]` todo line) need `--` before them
   (Click option parsing).
 - **A plain-text prefix of a bullet that continues into a link matches only
