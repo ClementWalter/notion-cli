@@ -434,8 +434,9 @@ insert-at-position primitive. Consequences:
   `query` returns name, email and id directly and is the one lookup that does
   not depend on a prior read. A profile page's `created_by_id` is its
   author, not its subject. A wrong id resolves silently, and even a correct
-  cached uuid (`user://<id>` or bare `<id>`) has silently no-op'd on `update
-  --prop 'Owner=…'` while reporting success — the cached display name
+  cached uuid (`user://<id>` or bare `<id>`) on `update --prop 'Owner=…'` can
+  silently no-op while reporting success, or fail with `400 … Block property
+  value updates must use high-level property operations` — the cached display name
   (`Owner=Mathieu Saugier`) went through reliably in the same case. Prefer the
   name over the uuid when both are available, and always re-read
   `--props-only` after writing an Owner.
