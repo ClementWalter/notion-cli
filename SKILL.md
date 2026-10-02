@@ -371,6 +371,11 @@ insert-at-position primitive. Consequences:
   punctuation stays too, so `new` has to leave it balanced — a rewrite that
   drops the opening parenthesis of `(following [link])` leaves a stray `)`.
   Re-read any edited line that carries a link.
+- **A plain segment between two links is unreachable when it repeats.** A
+  separator such as `, ` between link runs is its own segment, so `old` cannot
+  be made unique by including the neighbouring links. Use the Notion MCP
+  `notion-update-page` `update_content` with an `old_str` that spans the
+  rendered `[label](url)` links on both sides.
 - **Link hrefs are never rewritten.** Matching the visible label relabels it
   only; matching the URL fails. To redirect a link, append a corrected one.
 - **A heading's own text is a whole-block match.** A multi-paragraph `new`
