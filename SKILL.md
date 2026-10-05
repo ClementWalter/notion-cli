@@ -404,6 +404,12 @@ insert-at-position primitive. Consequences:
   cell is `@page(id)`, not `[page](url)`) and pass the same snippet plus the new
   rows as `new`. Inserting before a trailing total row,
   backfilling mid-table and adding several rows in one call all work this way.
+  Changing a cell of a row that carries `crdt_format_version` fails with
+  `400 … Block property value updates must use high-level property
+  operations`, whatever the snippet, so don't retry `edit` on it. Edit the cell
+  with the Notion MCP `notion-update-page` `update_content`, with `old_str` set
+  to a unique `<td>…</td>` exactly as `notion-fetch` renders it (see the
+  Simple-table gotcha below).
 - **Checkboxes** are not text: `edit` cannot reach them. Use
   `check <block_id> [--uncheck]` with an id from `blocks <page>` at default
   depth.
