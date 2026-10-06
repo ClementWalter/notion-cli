@@ -446,8 +446,7 @@ insert-at-position primitive. Consequences:
   not depend on a prior read. A profile page's `created_by_id` is its
   author, not its subject. A wrong id resolves silently, and even a correct
   cached uuid (`user://<id>` or bare `<id>`) on `update --prop 'Owner=…'` can
-  silently no-op while reporting success, or fail with `400 … Block property
-  value updates must use high-level property operations` — the cached display name
+  silently no-op while reporting success — the cached display name
   (`Owner=Mathieu Saugier`) went through reliably in the same case. Prefer the
   name over the uuid when both are available, and always re-read
   `--props-only` after writing an Owner.
@@ -482,11 +481,12 @@ insert-at-position primitive. Consequences:
   operations`. Such a table's cells are edited through the Notion MCP
   `notion-update-page` `update_content`, where `old_str` is a unique
   `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
-  The same 400 hits `check` on a CRDT `to_do` block and `update --prop` on a
-  CRDT database row, while `edit` on their text still works. The MCP route
-  covers both: `update_content` with `old_str` = the `- [ ] <first words>`
-  prefix (a trailing mention in `old_str` does not match), and
-  `update_properties` for the property. Both keep the block ids.
+  The same 400 hits `check` on a CRDT `to_do` block, while `edit` on its text
+  still works; the MCP route is `update_content` with `old_str` = the
+  `- [ ] <first words>` prefix (a trailing mention in `old_str` does not
+  match), and it keeps the block id. `update --prop` writes through
+  `updateBlockPropertyValue`, the op Notion's client uses, so it works on CRDT
+  database rows (every Projects row carries `crdt_format_version`).
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise

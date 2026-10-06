@@ -970,3 +970,12 @@ def test_http_error_message_leads_with_debug_message():
 
 def test_http_error_message_falls_back_to_body_prefix():
     assert notion_cli.http_error_message(502, "loadPageChunk", "<html>bad gateway</html>") == "502 on loadPageChunk: <html>bad gateway</html>"
+
+
+def test_prop_op_wraps_values_in_update_block_property_value():
+    assert notion_cli.prop_op("r1", {"UO:Y": [["x"]]}, "s1") == {
+        "pointer": {"table": "block", "id": "r1", "spaceId": "s1"},
+        "path": ["properties"],
+        "command": "updateBlockPropertyValue",
+        "args": {"primitiveOp": {"command": "update", "args": {"UO:Y": [["x"]]}}},
+    }
