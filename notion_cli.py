@@ -564,6 +564,14 @@ def op(table: str, rid: str, path: list, command: str, args: Any, space_id: str)
     return {"pointer": {"table": table, "id": rid, "spaceId": space_id}, "path": path, "command": command, "args": args}
 
 
+def prop_op(rid: str, values: dict, space_id: str) -> dict:
+    """Merge row property values through `updateBlockPropertyValue`.
+
+    Notion rejects a raw `set` on `properties.<id>` of a CRDT row ("must use
+    high-level property operations"); this is the op its own client sends."""
+    return op("block", rid, ["properties"], "updateBlockPropertyValue", {"primitiveOp": {"command": "update", "args": values}}, space_id)
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -2551,11 +2559,13 @@ def update(page_ref, props, archive, icon):
             sch = schema_by_name(coll)
         else:
             sch = {"Title": ("title", "title")}
+        values = {}
         for name, val in _parse_prop_args(props).items():
             if name not in sch:
                 raise click.ClickException(f"unknown property {name!r}; known: {', '.join(sorted(sch))}")
             prop_id, ptype = sch[name]
-            ops.append(op("block", pid, ["properties", prop_id], "set", coerce_segments(val, ptype), api.space_id))
+            values[prop_id] = coerce_segments(val, ptype)
+        ops.append(prop_op(pid, values, api.space_id))
     if archive is not None:
         ops.append(op("block", pid, [], "update", {"alive": not archive}, api.space_id))
     if icon:
