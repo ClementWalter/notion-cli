@@ -58,8 +58,8 @@ notion login --source arc --space "My Workspace"
 ```
 
 Manual fallback — grab `token_v2` from a logged-in browser (devtools →
-Application → Cookies → `https://www.notion.so` → `token_v2`, value starts
-with `v03:`), then:
+Application → Cookies → `https://app.notion.com` (SSO sessions) or
+`https://www.notion.so` → `token_v2`, value starts with `v03:`), then:
 
 ```bash
 notion auth                 # prompts for token_v2, hidden input

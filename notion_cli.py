@@ -1790,6 +1790,15 @@ def _decrypt_chromium_cookie(encrypted: bytes, keychain_service: str) -> str | N
     return None
 
 
+# SSO sign-ins land on app.notion.com, older sessions on www.notion.so; the
+# freshest cookie goes first so a stale session on the other host can't win.
+TOKEN_COOKIE_SQL = (
+    "SELECT encrypted_value FROM cookies WHERE name='token_v2' "
+    "AND (host_key LIKE '%notion.so' OR host_key LIKE '%notion.com') "
+    "ORDER BY last_access_utc DESC"
+)
+
+
 def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
     """Yield (token_v2, source_label) candidates from local cookie stores."""
     import shutil
@@ -1816,9 +1825,7 @@ def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
             # encrypted_value is binary but some stores give it TEXT affinity —
             # force bytes so sqlite doesn't try (and fail) to decode UTF-8
             conn.text_factory = bytes
-            rows = conn.execute(
-                "SELECT encrypted_value FROM cookies WHERE host_key LIKE '%notion.so' AND name='token_v2'"
-            ).fetchall()
+            rows = conn.execute(TOKEN_COOKIE_SQL).fetchall()
         for (enc,) in rows:
             try:
                 token = _decrypt_chromium_cookie(bytes(enc), service)
@@ -1840,7 +1847,7 @@ def login(source, space):
 
     Decrypts the local cookie stores with the apps' macOS-keychain keys — no
     password typed, no browser automation; requires being logged in to
-    notion.so in one of them. Stale sessions (a logged-out desktop app) are
+    notion.so or app.notion.com in one of them. Stale sessions (a logged-out desktop app) are
     skipped: the first token that VALIDATES against the API wins. May pop one
     keychain 'Allow' dialog per app.
     """
@@ -1855,7 +1862,7 @@ def login(source, space):
         log.info("token from %s rejected (%s), trying next store", label, r.status_code)
     raise click.ClickException(
         ("all extracted tokens were stale (" + ", ".join(tried) + ")" if tried else "no decryptable token_v2 found in Notion/Chrome/Arc/Brave")
-        + " — log in to notion.so in one of those apps, or paste the cookie via `auth`."
+        + " — log in to app.notion.com in one of those apps, or paste the cookie via `auth`."
     )
 
 
