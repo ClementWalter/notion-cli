@@ -261,12 +261,15 @@ MD
 # Mentions match as `page` renders them (`@Ada`). Prefer --section over guessing
 # the current paragraph; on no match, edit prints a short page preview.
 # Anchor on plain text; `--` when old/new start with '-'. See "Editing bodies safely".
+# An `old` that spans an inline-code span or a mention reports no match, so text
+# that must follow a sentence ending in `code` or @user is added with --section.
 notion edit <page> "1,296,000" "1,335,000"
 notion edit <page> -- "- [ ] ship it" "- [ ] ship it by Friday"
 notion edit <page> --section "1. What" --md what.md
 # --md is a PATH (or '-' for stdin), never inline markdown: passing the text
 # itself fails with `OSError: File name too long`, which reads like a bug and
-# is not. `--body` is the inline form of the same payload.
+# is not. `--body` is the inline form of the same payload on `edit` and
+# `create`; `append` takes `--md` only.
 notion edit <page> --section "2. Crew" --md - <<'MD'
 | Role | Owner |
 |---|---|
