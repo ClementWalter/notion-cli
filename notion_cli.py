@@ -931,7 +931,8 @@ def _render_block(api: Api, b: dict, blocks: dict, names: dict, depth: int, max_
         lines.append(f"{ind}▸ {title}")
     elif t == "callout":
         icon = fmt.get("page_icon", "")
-        lines.append(f"{ind}> [!{icon}] {title}")
+        color = _V3_TO_MD_COLOR.get(fmt.get("block_color", ""))
+        lines.append(f"{ind}> [!{icon}{':' + color if color else ''}] {title}")
     elif t == "quote":
         lines.append(f"{ind}> {title}")
     elif t == "code":
@@ -1290,6 +1291,21 @@ _MD_COLOR = {  # public-API-style color names -> v3 block colors
     "orange_bg": "orange_background", "red_bg": "red_background", "purple_bg": "purple_background",
     "pink_bg": "pink_background", "gray_bg": "gray_background", "brown_bg": "brown_background",
 }
+_V3_TO_MD_COLOR = {v: k for k, v in _MD_COLOR.items()}
+
+
+def callout_color(color: str | None) -> str:
+    """v3 background colour for a callout; white callouts are refused."""
+    if color in _MD_COLOR:
+        return _MD_COLOR[color]
+    if color in _V3_TO_MD_COLOR:
+        return color
+    raise click.ClickException(
+        f"callout needs a background colour, got {color or 'none'}: write `> [!<emoji>:<color>_bg] …` "
+        f"with one of {', '.join(_MD_COLOR)}"
+    )
+
+
 _CALLOUT = re.compile(r"^> \[!(?P<icon>[^\]:]*)(?::(?P<color>[a-z_]+))?\] ?(?P<text>.*)$")
 
 
@@ -1328,11 +1344,12 @@ def md_to_v3_blocks(md: str) -> list[dict]:
         blk: dict | None = None
         m = _CALLOUT.match(stripped)
         if m:
-            blk = {"type": "callout", "properties": {"title": md_to_segments(m.group("text"))}, "format": {}}
+            # callout_version 2 is what makes Notion paint block_color; without
+            # it the callout renders white whatever the colour says
+            blk = {"type": "callout", "properties": {"title": md_to_segments(m.group("text"))},
+                   "format": {"block_color": callout_color(m.group("color")), "callout_version": 2}}
             if m.group("icon"):
                 blk["format"]["page_icon"] = m.group("icon")
-            if m.group("color"):
-                blk["format"]["block_color"] = _MD_COLOR.get(m.group("color"), m.group("color"))
         elif stripped.startswith("### "):
             blk = {"type": "sub_sub_header", "properties": {"title": md_to_segments(stripped[4:])}}
         elif stripped.startswith("## "):
