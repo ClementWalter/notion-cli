@@ -10,11 +10,13 @@ import sys
 import time
 from pathlib import Path
 
+import click
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import notion_cli  # noqa: E402
 from notion_cli import (  # noqa: E402
+    _render_block,
     _epoch_ms,
     apply_table_md_replace,
     block_to_spec,
@@ -237,6 +239,26 @@ def test_v3_nested_bullet_becomes_child():
 def test_v3_callout_icon_and_color():
     b = md_to_v3_blocks("> [!💸:blue_bg] TLDR")[0]
     assert (b["format"]["page_icon"], b["format"]["block_color"]) == ("💸", "blue_background")
+
+
+def test_v3_callout_sets_callout_version_2():
+    assert md_to_v3_blocks("> [!💸:blue_bg] TLDR")[0]["format"]["callout_version"] == 2
+
+
+def test_v3_callout_accepts_v3_colour_name():
+    assert md_to_v3_blocks("> [!💸:green_background] TLDR")[0]["format"]["block_color"] == "green_background"
+
+
+@pytest.mark.parametrize("md", ["> [!💸] TLDR", "> [!💸:default] TLDR", "> [!💸:blue] TLDR"])
+def test_v3_callout_without_background_is_refused(md):
+    with pytest.raises(click.ClickException):
+        md_to_v3_blocks(md)
+
+
+def test_render_callout_round_trips_colour():
+    b = {"id": "c", "type": "callout", "properties": {"title": [["TLDR"]]},
+         "format": {"page_icon": "🌳", "block_color": "green_background"}}
+    assert _render_block(None, b, {"c": b}, {}, 0, 6) == ["> [!🌳:green_bg] TLDR"]
 
 
 def test_v3_plain_quote():

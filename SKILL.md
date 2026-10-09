@@ -223,8 +223,8 @@ notion create --parent <db_or_ds> \
 # Owner ids are NOTION user ids (a Slack `U…` id fails with an opaque
 # `400 incomplete_ancestor_path`); a wrong-but-valid id resolves silently, so
 # re-read `--props-only` and check the resolved name.
-# A callout's colour (`> [!💸:blue_bg]`) is only settable inside this create
-# transaction; --icon is unreliable (silent no-op on many rows). See Gotchas.
+# A callout must carry a background (`> [!💸:blue_bg]`); a colourless one is
+# refused. --icon is unreliable (silent no-op on many rows). See Gotchas.
 
 # List a database's templates, then clone one at create time
 notion templates <db_or_ds>
@@ -453,9 +453,13 @@ insert-at-position primitive. Consequences:
   (`Owner=Mathieu Saugier`) went through reliably in the same case. Prefer the
   name over the uuid when both are available, and always re-read
   `--props-only` after writing an Owner.
-- `create --md`: the TL;DR callout colour is only settable via
-  `> [!emoji:color_bg]` inside the create transaction — a later recolour fails
-  with `incomplete_ancestor_path`, and omitting `:<color>_bg` renders white.
+- Callouts: every markdown callout must carry a background,
+  `> [!emoji:<color>_bg]`. `create`, `append`, `edit --section` and `rewrite`
+  refuse a callout without one, because a white callout is never wanted. The
+  parser also writes `format.callout_version: 2`. Without it, Notion renders a
+  callout white even when `block_color` is set, so `page --raw` can show a
+  colour the page does not display. `page` renders the colour back
+  (`> [!🌳:green_bg]`), so a `--write` round-trip keeps it.
   `--icon` silently no-ops on many rows. `--md` can no-op on a reported
   success: re-read `--raw` and check `content` is non-empty and the first child
   is a `callout` with `format.block_color`. A `status`-type property can also
