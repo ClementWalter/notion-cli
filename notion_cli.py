@@ -520,6 +520,31 @@ class Api:
             raise click.ClickException(f"block {bid} not found or not accessible")
         return recs[bid]
 
+    # ---- integrations -----------------------------------------------------
+
+    def slack_bot_ids(self) -> list[str]:
+        """The user's Slack integration bots in this space, cached per run.
+        `unfurlUrl` rejects a request that also names other integrations' bots."""
+        if not hasattr(self, "_slack_bot_ids"):
+            d = self.post("getUserSpaceExternalBots", {"spaceId": self.space_id})
+            bots = (unwrap(w) for w in d.get("recordMap", {}).get("bot", {}).values())
+            self._slack_bot_ids = [b["id"] for b in bots if b.get("name") == "Slack"]
+        return self._slack_bot_ids
+
+    def unfurl(self, url: str) -> dict | None:
+        """Notion's own unfurl of a Slack `url` through the user's Slack integration:
+        `{"root": {...}, "relations": [...]}`, or None when it cannot."""
+        try:
+            bots = self.slack_bot_ids()
+            if not bots:
+                return None
+            d = self.post("unfurlUrl", {"url": url, "botIds": bots, "spaceId": self.space_id})
+        except click.ClickException as exc:
+            log.warning("unfurl failed for %s: %s", url, exc)
+            return None
+        root = d.get("root") or {}
+        return d if root.get("external_object_id") and root.get("attributes") else None
+
     # ---- writes -----------------------------------------------------------
 
     def transact(self, ops: list[dict]) -> None:
@@ -647,6 +672,13 @@ def seg_to_md(segments: list | None, names: dict[str, str] | None = None, *, wri
                         rendered = f"@[{title}]({href})" if title else f"@[]({href})"
                     else:
                         rendered = f"[{title}]({href})" if title else f"<{href}>"
+                elif kind == "eoi" and len(m) > 1 and names.get("uri:" + str(m[1])):
+                    # native integration mention; writes back through `@[label](url)`,
+                    # which re-unfurls a Slack link into the same native pill
+                    href = names["uri:" + m[1]]
+                    title = names.get(m[1], "").replace("[", "(").replace("]", ")")
+                    title = title if len(title) <= 80 else title[:79] + "…"
+                    rendered = f"@[{title}]({href})" if writeable else (f"[{title}]({href})" if title else f"<{href}>")
                 elif len(m) > 1:  # unknown pill kinds: salvage a url/text
                     v = m[1]
                     if isinstance(v, str):
@@ -745,6 +777,68 @@ def link_mention_segment(url: str, label: str | None = None, provider: str | Non
     if icon:
         payload["icon_url"] = icon
     return ["‣", [["lm", {k: v for k, v in payload.items() if v}]]]
+
+
+# --------------------------------------------------------------------------
+# native integration mentions (Slack)
+# --------------------------------------------------------------------------
+
+# A Slack link pasted "as mention" in Notion is not an `lm` chip but an `eoi`
+# pill pointing at an `external_object_instance` block that holds the unfurled
+# message (author, text, channel), with one child instance per related user or
+# channel. The web client builds it from `unfurlUrl`'s response; the same is
+# done here so a Slack link written through the CLI renders like a pasted one.
+_SLACK_ARCHIVE = re.compile(r"^https?://[a-z0-9-]+\.slack\.com/archives/[A-Za-z0-9]+(?:/p\d+)?(?:[/?#]|$)", re.I)
+
+
+def is_slack_archive_url(url: str) -> bool:
+    return bool(_SLACK_ARCHIVE.match(url or ""))
+
+
+def eoi_records(unfurl: dict, url: str, parent_id: str, space_id: str) -> tuple[str, list[dict]]:
+    """Create-ops for an unfurled object under the block that mentions it.
+    Returns (instance id, ops)."""
+    root, now = unfurl["root"], now_ms()
+
+    def record(rid: str, pid: str, fmt: dict) -> dict:
+        return {"id": rid, "type": "external_object_instance", "format": fmt, "parent_id": pid, "parent_table": "block",
+                "alive": True, "space_id": space_id, "version": 1, "created_time": now, "last_edited_time": now}
+
+    rels = [r for r in unfurl.get("relations") or [] if r.get("uri") and not r.get("external_schema")]
+    child_ids = {r["uri"]: str(uuidlib.uuid4()) for r in rels}
+    eid = str(uuidlib.uuid4())
+    ops = [op("block", eid, [], "set", record(eid, parent_id, {
+        "uri": root["uri"], "original_url": url, "domain": urlsplit(url).netloc, "bot_id": root.get("bot_id"),
+        "stale": False, "attributes": root["attributes"], "external_object_id": root["external_object_id"],
+        "related_external_object_uris_to_instance_ids": child_ids,
+    }), space_id)]
+    for r in rels:
+        cid = child_ids[r["uri"]]
+        ops.append(op("block", cid, [], "set", record(cid, eid, {
+            "uri": r["uri"], "bot_id": r.get("bot_id"), "stale": False,
+            "attributes": r.get("attributes") or [], "external_object_id": r.get("external_object_id"),
+        }), space_id))
+    return eid, ops
+
+
+def native_slack_mentions(api: "Api", segments: list | None, parent_id: str) -> tuple[list | None, list[dict]]:
+    """Upgrade `lm` chips pointing at Slack messages/channels to native Slack
+    mentions owned by `parent_id`. A link Notion cannot unfurl keeps its chip."""
+    if not segments:
+        return segments, []
+    out, ops = [], []
+    for seg in segments:
+        marks = seg[1] if len(seg) > 1 else []
+        lm = next((m[1] for m in marks if m and m[0] == "lm" and len(m) > 1 and isinstance(m[1], dict)), None)
+        href = (lm or {}).get("href", "")
+        unfurl = api.unfurl(href) if seg and seg[0] == "‣" and is_slack_archive_url(href) else None
+        if not unfurl:
+            out.append(seg)
+            continue
+        eid, eops = eoi_records(unfurl, href, parent_id, api.space_id)
+        out.append(["‣", [["eoi", eid]]])
+        ops += eops
+    return out, ops
 
 
 # --------------------------------------------------------------------------
@@ -888,10 +982,25 @@ def _name_map(tables: dict) -> dict[str, str]:
     for uid, u in tables.get("notion_user", {}).items():
         names[uid] = u.get("name") or (u.get("given_name", "") + " " + u.get("family_name", "")).strip() or uid
     for bid, b in tables.get("block", {}).items():
+        if b.get("type") == "external_object_instance":
+            names.update(eoi_names(b))
+            continue
         t = seg_plain(b.get("properties", {}).get("title"))
         if t:
             names[bid] = t
     return names
+
+
+def eoi_names(b: dict) -> dict[str, str]:
+    """`{id: label, "uri:"+id: uri}` for an external_object_instance record,
+    the label being its unfurled title (a Slack message's text)."""
+    fmt = b.get("format") or {}
+    title = next((a.get("values") for a in fmt.get("attributes") or [] if a.get("id") == "title"), None) or []
+    label = seg_plain(title) if title and isinstance(title[0], list) else " ".join(str(v) for v in title)
+    out = {"uri:" + b["id"]: fmt.get("original_url") or fmt.get("uri") or ""}
+    if label.strip():
+        out[b["id"]] = " ".join(label.split())
+    return out
 
 
 def _render_children(api: Api, ids: list[str], blocks: dict, names: dict, depth: int, max_depth: int, *, writeable: bool = False) -> list[str]:
@@ -1411,10 +1520,14 @@ def blocks_to_ops(api: Api, specs: list[dict], parent_id: str, parent_table: str
 
     def emit(spec: dict, pid: str, ptable: str) -> str:
         bid = str(uuidlib.uuid4())
+        props, mention_ops = {}, []
+        for key, segs in spec.get("properties", {}).items():
+            props[key], extra = native_slack_mentions(api, segs, bid)
+            mention_ops += extra
         record: dict[str, Any] = {
             "id": bid,
             "type": spec["type"],
-            "properties": spec.get("properties", {}),
+            "properties": props,
             "parent_id": pid,
             "parent_table": ptable,
             "alive": True,
@@ -1429,6 +1542,7 @@ def blocks_to_ops(api: Api, specs: list[dict], parent_id: str, parent_table: str
         if children:
             record["content"] = []
         ops.append(op("block", bid, [], "set", record, api.space_id))
+        ops.extend(mention_ops)
         for ch in children:
             cid = emit(ch, bid, "block")
             ops.append(op("block", bid, ["content"], "listAfter", {"id": cid}, api.space_id))
@@ -2677,6 +2791,8 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
                 new_segs = md_to_segments(new)
             else:
                 new_segs = replace_in_segments(segs, old, new)
+            new_segs, mention_ops = native_slack_mentions(api, new_segs, bid)
+            ops += mention_ops
             ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
         api.transact(ops)
