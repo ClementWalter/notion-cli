@@ -312,16 +312,17 @@ notion delete-block <block_id>
   fallback; pointing at a guessed `/favicon.ico` yields a broken image instead.
   `@[label](url "Provider")` overrides the provider. A Notion URL is the one
   exception: use `@page(<id>)`, which tracks the page's live title and icon.
-- A **Slack** message/channel URL or a **Linear** issue/project/document URL in
-  `@[label](url)` becomes a native mention, the same pill as pasting the link
+- A **Slack** message/channel URL, a **Linear** issue/project/document URL or a
+  **GitHub** URL (file, PR, issue, repo) in `@[label](url)` becomes a native mention, the same pill as pasting the link
   in Notion and choosing "Mention": a Slack message shows author, text and
-  `#channel`; a Linear issue shows key, title and status. The CLI calls
+  `#channel`; a Linear issue shows key, title and status; a GitHub file shows
+  its name and repo. The CLI calls
   Notion's `unfurlUrl` with the user's bot for that integration and writes the
   `external_object_instance` records itself; the label is ignored, the pill
   shows the object. If Notion cannot unfurl it (integration not connected, no
   access), the link falls back to a chip with a warning. `page` renders these
   pills as `@[title](url)` (`--write`) or `[title](url)`, so a round-trip
-  recreates them. A plain `[label](url)` hyperlink to Slack or Linear is
+  recreates them. A plain `[label](url)` hyperlink to Slack, Linear or GitHub is
   refused with an error on every write path (append, create, edit, rewrite,
   tables, comments).
 - A plain `@Name` in markdown is not converted unless that name is in the id

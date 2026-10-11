@@ -784,19 +784,21 @@ def link_mention_segment(url: str, label: str | None = None, provider: str | Non
 
 
 # --------------------------------------------------------------------------
-# native integration mentions (Slack, Linear)
+# native integration mentions (Slack, Linear, GitHub)
 # --------------------------------------------------------------------------
 
-# A Slack or Linear link pasted "as mention" in Notion is not an `lm` chip but
+# A Slack, Linear or GitHub link pasted "as mention" in Notion is not an `lm` chip but
 # an `eoi` pill pointing at an `external_object_instance` block that holds the
 # unfurled object (a Slack message's author/text/channel, a Linear issue's
-# key/title/status), with one child instance per related user or channel. The
+# key/title/status, a GitHub file/PR/issue/repo), with one child instance per
+# related user, channel or repo. The
 # web client builds it from `unfurlUrl`'s response; the same is done here so a
 # link written through the CLI renders like a pasted one.
 _NATIVE_MENTION_URLS: tuple[tuple[re.Pattern, str], ...] = (
     # (url pattern, integration bot name)
     (re.compile(r"^https?://[a-z0-9-]+\.slack\.com/archives/[A-Za-z0-9]+(?:/p\d+)?(?:[/?#]|$)", re.I), "Slack"),
     (re.compile(r"^https?://linear\.app/[A-Za-z0-9_-]+/(?:issue|project|document)/[^\s]+", re.I), "Linear"),
+    (re.compile(r"^https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:[/?#]\S*)?$", re.I), "GitHub"),
 )
 
 
@@ -832,7 +834,7 @@ def eoi_records(unfurl: dict, url: str, parent_id: str, space_id: str) -> tuple[
 
 
 def native_mentions(api: "Api", segments: list | None, parent_id: str) -> tuple[list | None, list[dict]]:
-    """Upgrade `lm` chips pointing at Slack/Linear objects to native mentions
+    """Upgrade `lm` chips pointing at Slack/Linear/GitHub objects to native mentions
     owned by `parent_id`. A link Notion cannot unfurl keeps its chip."""
     if not segments:
         return segments, []
@@ -889,7 +891,7 @@ def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
         else:
             integration = native_mention_integration(m.group("url"))
             if integration:
-                # a plain hyperlink loses the native pill (Slack message, Linear issue)
+                # a plain hyperlink loses the native pill (Slack message, Linear issue, GitHub file)
                 raise click.ClickException(
                     f"{integration} link written as a plain hyperlink: {m.group(0)}\n"
                     f"Write it as @[{m.group('label')}]({m.group('url')}) so it becomes a native {integration} mention "

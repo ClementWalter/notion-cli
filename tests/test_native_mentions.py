@@ -1,5 +1,5 @@
-"""Unit tests for native Slack/Linear mentions: `@[label](url)` chips to Slack
-messages or Linear issues are upgraded to `eoi` pills backed by `external_object_instance` records built from
+"""Unit tests for native Slack/Linear/GitHub mentions: `@[label](url)` chips to
+Slack messages, Linear issues or GitHub objects are upgraded to `eoi` pills backed by `external_object_instance` records built from
 Notion's `unfurlUrl` response, and rendered back as `@[message](url)`. No network.
 """
 
@@ -78,8 +78,19 @@ def test_linear_url_maps_to_linear(url):
 
 
 @pytest.mark.parametrize("url", [
+    "https://github.com/zama-ai/fhevm/blob/8ff0de4/protocol-contracts/contracts/token/contracts/ZamaERC20.sol#L102",
+    "https://github.com/zama-ai/confidential-defi/pull/176",
+    "https://github.com/zama-ai/fhevm/issues/1",
+    "https://github.com/zama-ai/fhevm",
+])
+def test_github_url_maps_to_github(url):
+    assert native_mention_integration(url) == "GitHub"
+
+
+@pytest.mark.parametrize("url", [
     DRIVE_URL,
     "https://linear.app/zama/settings",
+    "https://github.com/features",
     "https://zama-ai.slack.com/docs/TFM7VTADR/F0C51SURTG8",
     "https://evil.example/zama-ai.slack.com/archives/C1/p1",
     "",
@@ -198,3 +209,8 @@ def test_other_hyperlink_is_accepted():
 def test_slack_docs_hyperlink_is_accepted():
     url = "https://zama-ai.slack.com/docs/TFM7VTADR/F0C51SURTG8"
     assert md_to_segments(f"[canvas]({url})", users={}) == [["canvas", [["a", url]]]]
+
+
+def test_plain_github_hyperlink_is_refused():
+    with pytest.raises(click.ClickException):
+        md_to_segments("[PR 176](https://github.com/zama-ai/confidential-defi/pull/176)", users={})
