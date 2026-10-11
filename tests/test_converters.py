@@ -246,8 +246,32 @@ def test_v3_callout_sets_callout_version_2():
     assert md_to_v3_blocks("> [!💸:blue_bg] TLDR")[0]["format"]["callout_version"] == 2
 
 
+def test_v3_callout_text_goes_to_first_child():
+    assert md_to_v3_blocks("> [!💸:blue_bg] TLDR")[0]["children"][0] == {"type": "text", "properties": {"title": [["TLDR"]]}}
+
+
+def test_v3_callout_title_is_empty():
+    assert md_to_v3_blocks("> [!💸:blue_bg] TLDR")[0]["properties"]["title"] == []
+
+
+def test_v3_callout_text_child_precedes_indented_children():
+    assert md_to_v3_blocks("> [!💸:blue_bg] TLDR\n  - point")[0]["children"][1]["type"] == "bulleted_list"
+
+
+def test_v3_empty_callout_has_no_children():
+    assert "children" not in md_to_v3_blocks("> [!💸:blue_bg]")[0]
+
+
 def test_v3_callout_accepts_v3_colour_name():
-    assert md_to_v3_blocks("> [!💸:green_background] TLDR")[0]["format"]["block_color"] == "green_background"
+    assert md_to_v3_blocks("> [!💸:blue_background] TLDR")[0]["format"]["block_color"] == "blue_background"
+
+
+def test_v3_callout_green_is_teal():
+    assert md_to_v3_blocks("> [!💸:green_bg] TLDR")[0]["format"]["block_color"] == "teal_background"
+
+
+def test_v3_callout_public_api_green_is_teal():
+    assert md_to_v3_blocks("> [!💸:green_background] TLDR")[0]["format"]["block_color"] == "teal_background"
 
 
 @pytest.mark.parametrize("md", ["> [!💸] TLDR", "> [!💸:default] TLDR", "> [!💸:blue] TLDR"])
@@ -258,7 +282,7 @@ def test_v3_callout_without_background_is_refused(md):
 
 def test_render_callout_round_trips_colour():
     b = {"id": "c", "type": "callout", "properties": {"title": [["TLDR"]]},
-         "format": {"page_icon": "🌳", "block_color": "green_background"}}
+         "format": {"page_icon": "🌳", "block_color": "teal_background"}}
     assert _render_block(None, b, {"c": b}, {}, 0, 6) == ["> [!🌳:green_bg] TLDR"]
 
 
