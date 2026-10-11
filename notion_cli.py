@@ -522,21 +522,25 @@ class Api:
 
     # ---- integrations -----------------------------------------------------
 
-    def slack_bot_ids(self) -> list[str]:
-        """The user's Slack integration bots in this space, cached per run.
+    def integration_bot_ids(self, name: str) -> list[str]:
+        """The user's bots for one integration ("Slack", "Linear") in this space.
         `unfurlUrl` rejects a request that also names other integrations' bots."""
-        if not hasattr(self, "_slack_bot_ids"):
+        if not hasattr(self, "_integration_bots"):
             d = self.post("getUserSpaceExternalBots", {"spaceId": self.space_id})
-            bots = (unwrap(w) for w in d.get("recordMap", {}).get("bot", {}).values())
-            self._slack_bot_ids = [b["id"] for b in bots if b.get("name") == "Slack"]
-        return self._slack_bot_ids
+            self._integration_bots: dict[str, list[str]] = {}
+            for w in d.get("recordMap", {}).get("bot", {}).values():
+                b = unwrap(w)
+                if b.get("name"):
+                    self._integration_bots.setdefault(b["name"], []).append(b["id"])
+        return self._integration_bots.get(name, [])
 
-    def unfurl(self, url: str) -> dict | None:
-        """Notion's own unfurl of a Slack `url` through the user's Slack integration:
+    def unfurl(self, url: str, integration: str) -> dict | None:
+        """Notion's own unfurl of `url` through the user's `integration`:
         `{"root": {...}, "relations": [...]}`, or None when it cannot."""
         try:
-            bots = self.slack_bot_ids()
+            bots = self.integration_bot_ids(integration)
             if not bots:
+                log.warning("no %s integration connected; %s stays a link chip", integration, url)
                 return None
             d = self.post("unfurlUrl", {"url": url, "botIds": bots, "spaceId": self.space_id})
         except click.ClickException as exc:
@@ -780,19 +784,25 @@ def link_mention_segment(url: str, label: str | None = None, provider: str | Non
 
 
 # --------------------------------------------------------------------------
-# native integration mentions (Slack)
+# native integration mentions (Slack, Linear)
 # --------------------------------------------------------------------------
 
-# A Slack link pasted "as mention" in Notion is not an `lm` chip but an `eoi`
-# pill pointing at an `external_object_instance` block that holds the unfurled
-# message (author, text, channel), with one child instance per related user or
-# channel. The web client builds it from `unfurlUrl`'s response; the same is
-# done here so a Slack link written through the CLI renders like a pasted one.
-_SLACK_ARCHIVE = re.compile(r"^https?://[a-z0-9-]+\.slack\.com/archives/[A-Za-z0-9]+(?:/p\d+)?(?:[/?#]|$)", re.I)
+# A Slack or Linear link pasted "as mention" in Notion is not an `lm` chip but
+# an `eoi` pill pointing at an `external_object_instance` block that holds the
+# unfurled object (a Slack message's author/text/channel, a Linear issue's
+# key/title/status), with one child instance per related user or channel. The
+# web client builds it from `unfurlUrl`'s response; the same is done here so a
+# link written through the CLI renders like a pasted one.
+_NATIVE_MENTION_URLS: tuple[tuple[re.Pattern, str], ...] = (
+    # (url pattern, integration bot name)
+    (re.compile(r"^https?://[a-z0-9-]+\.slack\.com/archives/[A-Za-z0-9]+(?:/p\d+)?(?:[/?#]|$)", re.I), "Slack"),
+    (re.compile(r"^https?://linear\.app/[A-Za-z0-9_-]+/(?:issue|project|document)/[^\s]+", re.I), "Linear"),
+)
 
 
-def is_slack_archive_url(url: str) -> bool:
-    return bool(_SLACK_ARCHIVE.match(url or ""))
+def native_mention_integration(url: str) -> str | None:
+    """The integration that renders `url` as a native mention, if any."""
+    return next((name for pattern, name in _NATIVE_MENTION_URLS if pattern.match(url or "")), None)
 
 
 def eoi_records(unfurl: dict, url: str, parent_id: str, space_id: str) -> tuple[str, list[dict]]:
@@ -821,9 +831,9 @@ def eoi_records(unfurl: dict, url: str, parent_id: str, space_id: str) -> tuple[
     return eid, ops
 
 
-def native_slack_mentions(api: "Api", segments: list | None, parent_id: str) -> tuple[list | None, list[dict]]:
-    """Upgrade `lm` chips pointing at Slack messages/channels to native Slack
-    mentions owned by `parent_id`. A link Notion cannot unfurl keeps its chip."""
+def native_mentions(api: "Api", segments: list | None, parent_id: str) -> tuple[list | None, list[dict]]:
+    """Upgrade `lm` chips pointing at Slack/Linear objects to native mentions
+    owned by `parent_id`. A link Notion cannot unfurl keeps its chip."""
     if not segments:
         return segments, []
     out, ops = [], []
@@ -831,7 +841,8 @@ def native_slack_mentions(api: "Api", segments: list | None, parent_id: str) -> 
         marks = seg[1] if len(seg) > 1 else []
         lm = next((m[1] for m in marks if m and m[0] == "lm" and len(m) > 1 and isinstance(m[1], dict)), None)
         href = (lm or {}).get("href", "")
-        unfurl = api.unfurl(href) if seg and seg[0] == "‣" and is_slack_archive_url(href) else None
+        integration = native_mention_integration(href) if seg and seg[0] == "‣" else None
+        unfurl = api.unfurl(href, integration) if integration else None
         if not unfurl:
             out.append(seg)
             continue
@@ -876,11 +887,12 @@ def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
         elif m.group("lm_url"):
             segs.append(link_mention_segment(m.group("lm_url"), m.group("lm_label"), m.group("lm_provider")))
         else:
-            if is_slack_archive_url(m.group("url")):
-                # a plain hyperlink loses the native Slack pill (author, message, channel)
+            integration = native_mention_integration(m.group("url"))
+            if integration:
+                # a plain hyperlink loses the native pill (Slack message, Linear issue)
                 raise click.ClickException(
-                    f"Slack link written as a plain hyperlink: {m.group(0)}\n"
-                    f"Write it as @[{m.group('label')}]({m.group('url')}) so it becomes a native Slack mention "
+                    f"{integration} link written as a plain hyperlink: {m.group(0)}\n"
+                    f"Write it as @[{m.group('label')}]({m.group('url')}) so it becomes a native {integration} mention "
                     "(render pages with `page --write` before writing them back)."
                 )
             segs.append([m.group("label"), [["a", m.group("url")]]])
@@ -1529,7 +1541,7 @@ def blocks_to_ops(api: Api, specs: list[dict], parent_id: str, parent_table: str
         bid = str(uuidlib.uuid4())
         props, mention_ops = {}, []
         for key, segs in spec.get("properties", {}).items():
-            props[key], extra = native_slack_mentions(api, segs, bid)
+            props[key], extra = native_mentions(api, segs, bid)
             mention_ops += extra
         record: dict[str, Any] = {
             "id": bid,
@@ -2798,7 +2810,7 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
                 new_segs = md_to_segments(new)
             else:
                 new_segs = replace_in_segments(segs, old, new)
-            new_segs, mention_ops = native_slack_mentions(api, new_segs, bid)
+            new_segs, mention_ops = native_mentions(api, new_segs, bid)
             ops += mention_ops
             ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))

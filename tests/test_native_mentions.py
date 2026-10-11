@@ -1,5 +1,5 @@
-"""Unit tests for native Slack mentions: Slack `@[label](url)` chips are
-upgraded to `eoi` pills backed by `external_object_instance` records built from
+"""Unit tests for native Slack/Linear mentions: `@[label](url)` chips to Slack
+messages or Linear issues are upgraded to `eoi` pills backed by `external_object_instance` records built from
 Notion's `unfurlUrl` response, and rendered back as `@[message](url)`. No network.
 """
 
@@ -13,10 +13,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from notion_cli import (  # noqa: E402
     eoi_names,
     eoi_records,
-    is_slack_archive_url,
     link_mention_segment,
     md_to_segments,
-    native_slack_mentions,
+    native_mention_integration,
+    native_mentions,
     seg_to_md,
 )
 
@@ -24,6 +24,9 @@ SPACE = "12345678-0000-4000-8000-000000000003"
 PARENT = "11111111-1111-1111-1111-111111111111"
 SLACK_URL = "https://acme.slack.com/archives/C0000000001/p1790078504822339"
 LINEAR_URL = "https://linear.app/acme/issue/PRO-459/create-rfc"
+DRIVE_URL = "https://docs.google.com/document/d/1B9Uwm6YVsJ2/edit"
+LINEAR_UNFURL = {"root": {"external_object_id": "ext-issue", "bot_id": "bot-linear", "uri": LINEAR_URL,
+                          "attributes": [{"id": "title", "values": ["Create RFC"]}, {"id": "identifier", "values": ["PRO-459"]}]}}
 UNFURL = {
     "root": {
         "external_object_id": "ext-root",
@@ -48,8 +51,8 @@ class StubApi:
     def __init__(self, responses: dict):
         self.responses = responses
 
-    def unfurl(self, url: str):
-        return self.responses.get(url)
+    def unfurl(self, url: str, integration: str):
+        return self.responses.get((url, integration))
 
 
 @pytest.fixture
@@ -62,18 +65,27 @@ def records():
     SLACK_URL + "?thread_ts=1790078504.822339&cid=C0000000001",
     "https://acme.slack.com/archives/C0000000001",
 ])
-def test_slack_archive_url_is_detected(url):
-    assert is_slack_archive_url(url)
+def test_slack_archive_url_maps_to_slack(url):
+    assert native_mention_integration(url) == "Slack"
 
 
 @pytest.mark.parametrize("url", [
     LINEAR_URL,
+    "https://linear.app/acme/project/wrappers-new-erc-7984-features-48f34027",
+])
+def test_linear_url_maps_to_linear(url):
+    assert native_mention_integration(url) == "Linear"
+
+
+@pytest.mark.parametrize("url", [
+    DRIVE_URL,
+    "https://linear.app/acme/settings",
     "https://acme.slack.com/docs/T00000000/F0000000001",
     "https://evil.example/acme.slack.com/archives/C1/p1",
     "",
 ])
-def test_non_archive_url_is_not_detected(url):
-    assert not is_slack_archive_url(url)
+def test_other_url_has_no_native_integration(url):
+    assert native_mention_integration(url) is None
 
 
 def test_root_instance_is_parented_to_mentioning_block(records):
@@ -102,29 +114,39 @@ def test_root_maps_relation_uris_to_child_ids(records):
 
 
 def test_slack_chip_becomes_eoi_pill():
-    segs, _ = native_slack_mentions(StubApi({SLACK_URL: UNFURL}), [link_mention_segment(SLACK_URL, "label")], PARENT)
+    segs, _ = native_mentions(StubApi({(SLACK_URL, "Slack"): UNFURL}), [link_mention_segment(SLACK_URL, "label")], PARENT)
     assert segs[0][1][0][0] == "eoi"
 
 
 def test_slack_chip_upgrade_emits_instance_ops():
-    _, ops = native_slack_mentions(StubApi({SLACK_URL: UNFURL}), [link_mention_segment(SLACK_URL, "label")], PARENT)
+    _, ops = native_mentions(StubApi({(SLACK_URL, "Slack"): UNFURL}), [link_mention_segment(SLACK_URL, "label")], PARENT)
     assert len(ops) == 3
 
 
-def test_non_slack_chip_is_kept():
-    chip = link_mention_segment(LINEAR_URL, "PRO-459")
-    segs, _ = native_slack_mentions(StubApi({}), [chip], PARENT)
+def test_linear_chip_becomes_eoi_pill():
+    segs, _ = native_mentions(StubApi({(LINEAR_URL, "Linear"): LINEAR_UNFURL}), [link_mention_segment(LINEAR_URL, "PRO-459")], PARENT)
+    assert segs[0][1][0][0] == "eoi"
+
+
+def test_linear_chip_upgrade_emits_one_instance():
+    _, ops = native_mentions(StubApi({(LINEAR_URL, "Linear"): LINEAR_UNFURL}), [link_mention_segment(LINEAR_URL, "PRO-459")], PARENT)
+    assert len(ops) == 1
+
+
+def test_chip_without_native_integration_is_kept():
+    chip = link_mention_segment(DRIVE_URL, "notes")
+    segs, _ = native_mentions(StubApi({}), [chip], PARENT)
     assert segs == [chip]
 
 
 def test_slack_chip_kept_when_unfurl_fails():
     chip = link_mention_segment(SLACK_URL, "label")
-    segs, _ = native_slack_mentions(StubApi({}), [chip], PARENT)
+    segs, _ = native_mentions(StubApi({}), [chip], PARENT)
     assert segs == [chip]
 
 
 def test_plain_text_segment_is_kept():
-    segs, _ = native_slack_mentions(StubApi({SLACK_URL: UNFURL}), [["see ", [["a", SLACK_URL]]]], PARENT)
+    segs, _ = native_mentions(StubApi({(SLACK_URL, "Slack"): UNFURL}), [["see ", [["a", SLACK_URL]]]], PARENT)
     assert segs == [["see ", [["a", SLACK_URL]]]]
 
 
@@ -164,8 +186,13 @@ def test_slack_link_mention_is_accepted():
     assert md_to_segments(f"@[the thread]({SLACK_URL})", users={})[0][1][0][0] == "lm"
 
 
-def test_non_slack_hyperlink_is_accepted():
-    assert md_to_segments(f"[PRO-459]({LINEAR_URL})", users={}) == [["PRO-459", [["a", LINEAR_URL]]]]
+def test_plain_linear_hyperlink_is_refused():
+    with pytest.raises(click.ClickException):
+        md_to_segments(f"[PRO-459]({LINEAR_URL})", users={})
+
+
+def test_other_hyperlink_is_accepted():
+    assert md_to_segments(f"[notes]({DRIVE_URL})", users={}) == [["notes", [["a", DRIVE_URL]]]]
 
 
 def test_slack_docs_hyperlink_is_accepted():
