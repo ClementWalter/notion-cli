@@ -6,6 +6,7 @@ Notion's `unfurlUrl` response, and rendered back as `@[message](url)`. No networ
 import sys
 from pathlib import Path
 
+import click
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -14,6 +15,7 @@ from notion_cli import (  # noqa: E402
     eoi_records,
     is_slack_archive_url,
     link_mention_segment,
+    md_to_segments,
     native_slack_mentions,
     seg_to_md,
 )
@@ -150,3 +152,22 @@ def test_eoi_pill_renders_writeable_link_mention(records):
 def test_eoi_pill_renders_plain_link(records):
     eid, ops = records
     assert seg_to_md([["‣", [["eoi", eid]]]], eoi_names(ops[0]["args"])) == f"[I think we need to properly spec analytics]({SLACK_URL})"
+
+
+@pytest.mark.parametrize("url", [SLACK_URL, SLACK_URL + "?thread_ts=1790078504.822339&cid=C0000000001"])
+def test_plain_slack_hyperlink_is_refused(url):
+    with pytest.raises(click.ClickException):
+        md_to_segments(f"see [the thread]({url})", users={})
+
+
+def test_slack_link_mention_is_accepted():
+    assert md_to_segments(f"@[the thread]({SLACK_URL})", users={})[0][1][0][0] == "lm"
+
+
+def test_non_slack_hyperlink_is_accepted():
+    assert md_to_segments(f"[PRO-459]({LINEAR_URL})", users={}) == [["PRO-459", [["a", LINEAR_URL]]]]
+
+
+def test_slack_docs_hyperlink_is_accepted():
+    url = "https://acme.slack.com/docs/T00000000/F0000000001"
+    assert md_to_segments(f"[canvas]({url})", users={}) == [["canvas", [["a", url]]]]

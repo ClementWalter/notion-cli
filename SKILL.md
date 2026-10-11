@@ -320,7 +320,8 @@ notion delete-block <block_id>
   unfurl it (no Slack integration, no access to the channel), the link falls
   back to a chip with a warning. `page` renders these pills as
   `@[message text](url)` (`--write`) or `[message text](url)`, so a round-trip
-  recreates them. Never write a Slack link as a plain `[label](url)` hyperlink.
+  recreates them. A plain `[label](slack-url)` hyperlink is refused with an error
+  on every write path (append, create, edit, rewrite, tables, comments).
 - A plain `@Name` in markdown is not converted unless that name is in the id
   cache (below) — it silently lands as text. Only `@page(<id>)`, `@user(<id>)`
   and cached unique names become mentions.
