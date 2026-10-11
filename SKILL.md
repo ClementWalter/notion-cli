@@ -312,16 +312,18 @@ notion delete-block <block_id>
   fallback; pointing at a guessed `/favicon.ico` yields a broken image instead.
   `@[label](url "Provider")` overrides the provider. A Notion URL is the one
   exception: use `@page(<id>)`, which tracks the page's live title and icon.
-- A **Slack** message or channel URL in `@[label](url)` becomes a native Slack
-  mention, the same pill as pasting the link in Notion and choosing "Mention":
-  author avatar, message text, `#channel`. The CLI calls Notion's `unfurlUrl`
-  with the user's Slack bot and writes the `external_object_instance` records
-  itself; the label is ignored, the pill shows the message. If Notion cannot
-  unfurl it (no Slack integration, no access to the channel), the link falls
-  back to a chip with a warning. `page` renders these pills as
-  `@[message text](url)` (`--write`) or `[message text](url)`, so a round-trip
-  recreates them. A plain `[label](slack-url)` hyperlink is refused with an error
-  on every write path (append, create, edit, rewrite, tables, comments).
+- A **Slack** message/channel URL or a **Linear** issue/project/document URL in
+  `@[label](url)` becomes a native mention, the same pill as pasting the link
+  in Notion and choosing "Mention": a Slack message shows author, text and
+  `#channel`; a Linear issue shows key, title and status. The CLI calls
+  Notion's `unfurlUrl` with the user's bot for that integration and writes the
+  `external_object_instance` records itself; the label is ignored, the pill
+  shows the object. If Notion cannot unfurl it (integration not connected, no
+  access), the link falls back to a chip with a warning. `page` renders these
+  pills as `@[title](url)` (`--write`) or `[title](url)`, so a round-trip
+  recreates them. A plain `[label](url)` hyperlink to Slack or Linear is
+  refused with an error on every write path (append, create, edit, rewrite,
+  tables, comments).
 - A plain `@Name` in markdown is not converted unless that name is in the id
   cache (below) — it silently lands as text. Only `@page(<id>)`, `@user(<id>)`
   and cached unique names become mentions.

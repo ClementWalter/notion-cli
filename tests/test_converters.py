@@ -200,7 +200,8 @@ def test_md_seg_link_mention_with_explicit_provider():
 
 
 def test_md_seg_plain_link_is_not_a_mention():
-    assert md_to_segments(f"[SDK-285]({LINEAR_URL})") == [["SDK-285", [["a", LINEAR_URL]]]]
+    url = "https://github.com/zama-ai/sdk/pull/812"
+    assert md_to_segments(f"[PR 812]({url})") == [["PR 812", [["a", url]]]]
 
 
 def test_seg_link_mention_renders_as_markdown_link():
