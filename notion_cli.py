@@ -2779,6 +2779,15 @@ def delete_block(block_ref):
     click.echo("trashed")
 
 
+def check_ops(bid: str, uncheck: bool, space_id: str) -> list[dict]:
+    """Ops that set a to-do's `checked` property; `updateBlockPropertyValue`
+    because CRDT to-dos reject a raw `set` on `properties.checked`."""
+    return [
+        prop_op(bid, {"checked": [["No" if uncheck else "Yes"]]}, space_id),
+        op("block", bid, [], "update", {"last_edited_time": now_ms()}, space_id),
+    ]
+
+
 @cli.command()
 @click.argument("block_ref")
 @click.option("--uncheck", is_flag=True, help="clear the checkbox instead of setting it")
@@ -2794,11 +2803,7 @@ def check(block_ref, uncheck):
     b = api.block(bid)
     if b.get("type") != "to_do":
         raise click.ClickException(f"block {bid} is type {b.get('type')!r}, not a to_do")
-    ops = [
-        op("block", bid, ["properties", "checked"], "set", [["No" if uncheck else "Yes"]], api.space_id),
-        op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id),
-    ]
-    api.transact(ops)
+    api.transact(check_ops(bid, uncheck, api.space_id))
     invalidate_block_ancestry(api, bid, b)
     click.echo(f"{'unchecked' if uncheck else 'checked'} {bid}")
 
