@@ -312,6 +312,15 @@ notion delete-block <block_id>
   fallback; pointing at a guessed `/favicon.ico` yields a broken image instead.
   `@[label](url "Provider")` overrides the provider. A Notion URL is the one
   exception: use `@page(<id>)`, which tracks the page's live title and icon.
+- A **Slack** message or channel URL in `@[label](url)` becomes a native Slack
+  mention, the same pill as pasting the link in Notion and choosing "Mention":
+  author avatar, message text, `#channel`. The CLI calls Notion's `unfurlUrl`
+  with the user's Slack bot and writes the `external_object_instance` records
+  itself; the label is ignored, the pill shows the message. If Notion cannot
+  unfurl it (no Slack integration, no access to the channel), the link falls
+  back to a chip with a warning. `page` renders these pills as
+  `@[message text](url)` (`--write`) or `[message text](url)`, so a round-trip
+  recreates them. Never write a Slack link as a plain `[label](url)` hyperlink.
 - A plain `@Name` in markdown is not converted unless that name is in the id
   cache (below) — it silently lands as text. Only `@page(<id>)`, `@user(<id>)`
   and cached unique names become mentions.
