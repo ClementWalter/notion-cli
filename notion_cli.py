@@ -876,6 +876,13 @@ def md_to_segments(text: str, users: dict[str, str] | None = None) -> list:
         elif m.group("lm_url"):
             segs.append(link_mention_segment(m.group("lm_url"), m.group("lm_label"), m.group("lm_provider")))
         else:
+            if is_slack_archive_url(m.group("url")):
+                # a plain hyperlink loses the native Slack pill (author, message, channel)
+                raise click.ClickException(
+                    f"Slack link written as a plain hyperlink: {m.group(0)}\n"
+                    f"Write it as @[{m.group('label')}]({m.group('url')}) so it becomes a native Slack mention "
+                    "(render pages with `page --write` before writing them back)."
+                )
             segs.append([m.group("label"), [["a", m.group("url")]]])
         pos = m.end()
     if pos < len(text):
