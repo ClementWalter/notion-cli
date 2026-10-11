@@ -1414,8 +1414,8 @@ def apply_table_md_replace(rendered: str, old: str, new: str, replace_all: bool 
 # markdown -> v3 blocks
 # --------------------------------------------------------------------------
 
-_MD_COLOR = {  # public-API-style color names -> v3 block colors
-    "blue_bg": "blue_background", "green_bg": "green_background", "yellow_bg": "yellow_background",
+_MD_COLOR = {  # public-API-style color names -> v3 block colors (v3 calls green "teal")
+    "blue_bg": "blue_background", "green_bg": "teal_background", "yellow_bg": "yellow_background",
     "orange_bg": "orange_background", "red_bg": "red_background", "purple_bg": "purple_background",
     "pink_bg": "pink_background", "gray_bg": "gray_background", "brown_bg": "brown_background",
 }
@@ -1428,6 +1428,8 @@ def callout_color(color: str | None) -> str:
         return _MD_COLOR[color]
     if color in _V3_TO_MD_COLOR:
         return color
+    if color == "green_background":  # public-API name; v3 does not paint it
+        return "teal_background"
     raise click.ClickException(
         f"callout needs a background colour, got {color or 'none'}: write `> [!<emoji>:<color>_bg] …` "
         f"with one of {', '.join(_MD_COLOR)}"
@@ -1473,9 +1475,13 @@ def md_to_v3_blocks(md: str) -> list[dict]:
         m = _CALLOUT.match(stripped)
         if m:
             # callout_version 2 is what makes Notion paint block_color; without
-            # it the callout renders white whatever the colour says
-            blk = {"type": "callout", "properties": {"title": md_to_segments(m.group("text"))},
-                   "format": {"block_color": callout_color(m.group("color")), "callout_version": 2}}
+            # it the callout renders white whatever the colour says. A v2 callout
+            # displays only its child blocks and ignores its title, so the text
+            # goes into a first child paragraph, as Notion's own editor stores it.
+            text = md_to_segments(m.group("text")) if m.group("text").strip() else []
+            blk = {"type": "callout", "properties": {"title": []},
+                   "format": {"block_color": callout_color(m.group("color")), "callout_version": 2},
+                   "children": [{"type": "text", "properties": {"title": text}}] if text else []}
             if m.group("icon"):
                 blk["format"]["page_icon"] = m.group("icon")
         elif stripped.startswith("### "):
