@@ -405,8 +405,10 @@ insert-at-position primitive. Consequences:
   to the next heading**, never its children: on a toggle heading whose content
   is nested inside it, the new blocks land as siblings and the old children stay,
   so the page shows both. Check `blocks <page> --depth 2` first; when the
-  content is indented under the heading, `delete-block` each child id after the
-  rewrite. A `###` heading *is* matchable by `--section` and replaces only its
+  content is indented under the heading, replace it with the Notion MCP
+  `notion-update-page` `update_content` on the tab-indented lines under
+  `# Heading {toggle="true"}` as `notion-fetch` renders them, which keeps the
+  new blocks inside the toggle. A `###` heading *is* matchable by `--section` and replaces only its
   own siblings up to the next heading of any level, so a `### Slack channels`
   list under a `## See also` is editable on its own. A `## Heading` rewrite, by
   contrast, runs **through** any `###` sub-sections below it up to the next
