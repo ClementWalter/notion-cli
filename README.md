@@ -130,6 +130,7 @@ notion templates <db>                      # list templates
 notion create --parent <db> --prop 'Title=…' --template 'AI new item'   # clone one
 notion update <page> --prop 'Status=Done' --prop 'Due='   # empty value clears
 notion append <page> --md notes.md         # markdown incl. callouts, todos, @user()/@page() mentions
+notion append <page> --top --md top.md     # same, inserted above the first block
 notion edit <page> "old text" "new text"   # in-place replace; prints a preview on no match
 notion edit <page> --section "1. What" --md what.md   # replace a heading's body
 notion rewrite <page> --md body.md         # replace the whole page body
