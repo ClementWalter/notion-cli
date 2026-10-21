@@ -2514,15 +2514,36 @@ def _read_md(md_file: str | None, text: str | None) -> str:
     raise click.ClickException("no content: pass TEXT, --md FILE, or pipe stdin")
 
 
+def move_to_top_ops(parent_id: str, new_ids: list[str], first_id: str | None, space_id: str) -> list[dict]:
+    """Ops that move freshly appended top-level blocks above `first_id`, in order.
+    `blocks_to_ops` always appends at the end of the parent."""
+    if not first_id:
+        return []
+    ops: list[dict] = []
+    for bid in new_ids:
+        ops.append(op("block", parent_id, ["content"], "listRemove", {"id": bid}, space_id))
+        ops.append(op("block", parent_id, ["content"], "listBefore", {"id": bid, "before": first_id}, space_id))
+    return ops
+
+
 @cli.command()
 @click.argument("page_ref")
 @click.argument("text", required=False)
 @click.option("--md", "md_file", help="markdown file to append ('-' = stdin)")
-def append(page_ref, text, md_file):
-    """Append markdown content to a page."""
+@click.option("--top", is_flag=True, help="insert above the page's first block instead of at the end")
+def append(page_ref, text, md_file, top):
+    """Append markdown content to a page (or prepend it with --top)."""
     api = api_or_die()
     pid = parse_id(page_ref)
     specs = md_to_v3_blocks(_read_md(md_file, text))
+    if top:
+        content = api.block(pid).get("content") or []
+        ops, new_ids = blocks_to_ops(api, specs, pid)
+        ops += move_to_top_ops(pid, new_ids, content[0] if content else None, api.space_id)
+        ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+        api.transact(ops)
+        click.echo(f"prepended {len(new_ids)} block(s) to {page_url(pid)}")
+        return
     if len(specs) == 1 and specs[0].get("type") == "table":
         page = api.load_page(pid)
         blks = page.get("block", {})

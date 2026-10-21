@@ -249,6 +249,9 @@ notion append <page> "one liner"
 # option to Click ("No such option '- '") unless preceded by --:
 notion append <page> -- "- a bullet line"
 notion append <page> --md notes.md
+# --top inserts above the page's first block instead: the way to put a TL;DR
+# on a hub page whose inline databases and child pages a `rewrite` would trash
+notion append <page> --top --md top.md
 cat notes.md | notion append <page> --md -
 notion append <page> --md - <<'MD'
 | 2026-08-25 | 39,000 |  | [Slack](https://...) |
@@ -343,8 +346,9 @@ notion delete-block <block_id>
 
 ## Editing bodies safely
 
-`edit <page> "old" "new"` matches raw rich-text runs, and the CLI has no
-insert-at-position primitive. Consequences:
+`edit <page> "old" "new"` matches raw rich-text runs, and the only
+positional inserts are `append` (end of page), `append --top` (start of page)
+and `edit --section` (under a heading). Consequences:
 
 - **A multi-line `new` does not create sibling blocks.** It's appended as
   literal newlines inside the one matched block, `## Heading` and `- [ ]` text
