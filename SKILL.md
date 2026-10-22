@@ -530,6 +530,17 @@ and `edit --section` (under a heading). Consequences:
 - `edit` of a GFM table re-parses every cell through `md_to_segments`.
   `@Name` stays a mention when that user is in the id cache; otherwise
   pass `@user(uuid)` or `page --write` first.
+- A date mention renders in `page` as its bare ISO date, but it is its own
+  segment: `edit` never matches text that includes it (`no match`), and a
+  match ending next to it leaves the mention and its punctuation behind
+  (`( 2026-10-26)`). Remove or rewrite it through the Notion MCP
+  `notion-update-page` `update_content`, where `notion-fetch` renders it as
+  `<date start="…" />`.
+- `append "- item"` fails with `No such option '- '`: text that starts with a
+  dash is read as a flag. Pass it through `--md <file>` (or `--md -`).
+- `@[label](url)` in `create --md` / `append --md` writes a plain link, not the
+  link-preview chip that existing `## Sources` entries carry: `page --write`
+  then shows `[label](url)` without the `@`.
 - A brand-new discussion (`comment` without `--discussion`) is always created
   `resolved: False` — there's no `create --resolved` shortcut; call
   `resolve-discussion` right after if it should start closed.
