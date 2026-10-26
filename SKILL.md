@@ -100,6 +100,9 @@ notion page <id_or_url> --props-only # cheapest read
 notion page <id_or_url> --no-props   # body only
 notion page <id_or_url> --write      # @user(uuid)/@page(uuid) so the body can be written back
 notion page <id_or_url> --depth 2    # cap nested-children recursion
+# `§ [title](url)` = a child page, `§db [name](url)` = a child/inline database.
+# Their content is not inlined: read it with `page <url>` / `query <url>`.
+# Read-only markers: see "Child pages and databases" (writes etiquette) before writing back.
 notion page <id_or_url> --no-cache   # re-render — the check to run right after a block-level edit
 notion pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — batches what would
                                              # otherwise be one `page` call per id (content only, no props)
@@ -131,6 +134,12 @@ notion comments <page_id>      # every page-level + inline discussion, open AND 
 notion comments <page_id> --open-only
 notion users [query]           # space permission grants (name, email, id) — NOT every member; can be empty —
                                # then `resolve` an id already seen in a page, query or prior output
+# name -> uuid when `users` misses someone: no command does it. Write `@Full Name`
+# (cached unique names become mentions, see etiquette), or read the id cache that
+# every page/query/users call fills (a page or People column naming them puts them there):
+jq -r '.users | to_entries[] | select(.value | test("ada"; "i")) | "\(.value)\t\(.key)"' \
+  ~/.config/notion-cli/cache/id_names.json
+# not cached yet: `page <a page that @-mentions them> --write` prints @user(uuid)
 notion resolve <id> [<id> ...] # id -> name/title, local cache first, one API call max per new id
 notion blocks <page_id>        # child block ids (targets for edit/check/delete-block); default depth 1
                                # — keep it there on long pages, see Gotchas
@@ -343,6 +352,15 @@ notion delete-block <block_id>
   for link mentions, which a plain `page` renders as `[label](url)` so a digest
   reads cleanly. Rewriting a body from plain `page` output therefore downgrades
   every chip to a hyperlink — always round-trip from `--write`.
+- **Child pages and databases** (`§` / `§db` lines, same in `--write`) do not
+  round-trip. Written back, a `§` line becomes a plain paragraph with a link: it
+  neither creates nor keeps a subpage. `rewrite` and `edit --section` trash every
+  child page in scope (recoverable from trash) and keep inline databases in place
+  (a `rewrite` body lands after them; `rewrite --force` trashes them too).
+  `append` and `edit OLD NEW` never trash them. So drop the `§`/`§db` lines before
+  a `rewrite`, and on a page with subpages prefer `edit --section` on a section
+  without any, or `append --top`. A new subpage is
+  `create --parent <page> --prop 'Title=…' [--md …]`, added at the end of the page.
 
 ## Editing bodies safely
 
