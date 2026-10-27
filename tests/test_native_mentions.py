@@ -50,7 +50,7 @@ UNFURL = {
     },
     "relations": [
         {"external_object_id": "ext-user", "bot_id": "bot-slack", "uri": "https://slack.com/users/U1",
-         "attributes": [{"id": "title", "values": ["Rand Hindi"]}]},
+         "attributes": [{"id": "title", "values": ["Alice Example"]}]},
         {"external_object_id": "ext-chan", "bot_id": "bot-slack", "uri": "https://slack.com/channels/C1",
          "attributes": [{"id": "title", "values": ["#product"]}]},
     ],
@@ -183,7 +183,7 @@ def test_eoi_names_label_from_rich_text_title(records):
 def test_eoi_names_label_from_string_title(records):
     _, ops = records
     child = ops[1]["args"]
-    assert eoi_names(child)[child["id"]] == "Rand Hindi"
+    assert eoi_names(child)[child["id"]] == "Alice Example"
 
 
 def test_eoi_names_uri_prefers_original_url(records):
