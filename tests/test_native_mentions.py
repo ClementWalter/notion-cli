@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for native Slack/Linear/GitHub mentions: `@[label](url)` chips to
 Slack messages, Linear issues or GitHub objects are upgraded to `eoi` pills backed by `external_object_instance` records built from
 Notion's `unfurlUrl` response, and rendered back as `@[message](url)`. No network.
@@ -22,8 +36,8 @@ from notion_cli import (  # noqa: E402
 
 SPACE = "e665eddd-2a6d-4d3f-928a-0eabb195e2e4"
 PARENT = "11111111-1111-1111-1111-111111111111"
-SLACK_URL = "https://zama-ai.slack.com/archives/C0AG8FS0EFP/p1790078504822339"
-LINEAR_URL = "https://linear.app/zama/issue/PRO-459/create-rfc"
+SLACK_URL = "https://acme.slack.com/archives/C0000000001/p1790078504822339"
+LINEAR_URL = "https://linear.app/acme/issue/PRO-459/create-rfc"
 DRIVE_URL = "https://docs.google.com/document/d/1B9Uwm6YVsJ2/edit"
 LINEAR_UNFURL = {"root": {"external_object_id": "ext-issue", "bot_id": "bot-linear", "uri": LINEAR_URL,
                           "attributes": [{"id": "title", "values": ["Create RFC"]}, {"id": "identifier", "values": ["PRO-459"]}]}}
@@ -62,8 +76,8 @@ def records():
 
 @pytest.mark.parametrize("url", [
     SLACK_URL,
-    SLACK_URL + "?thread_ts=1790078504.822339&cid=C0AG8FS0EFP",
-    "https://zama-ai.slack.com/archives/C0AG8FS0EFP",
+    SLACK_URL + "?thread_ts=1790078504.822339&cid=C0000000001",
+    "https://acme.slack.com/archives/C0000000001",
 ])
 def test_slack_archive_url_maps_to_slack(url):
     assert native_mention_integration(url) == "Slack"
@@ -71,17 +85,17 @@ def test_slack_archive_url_maps_to_slack(url):
 
 @pytest.mark.parametrize("url", [
     LINEAR_URL,
-    "https://linear.app/zama/project/wrappers-new-erc-7984-features-48f34027",
+    "https://linear.app/acme/project/wrappers-new-erc-7984-features-48f34027",
 ])
 def test_linear_url_maps_to_linear(url):
     assert native_mention_integration(url) == "Linear"
 
 
 @pytest.mark.parametrize("url", [
-    "https://github.com/zama-ai/fhevm/blob/8ff0de4/protocol-contracts/contracts/token/contracts/ZamaERC20.sol#L102",
-    "https://github.com/zama-ai/confidential-defi/pull/176",
-    "https://github.com/zama-ai/fhevm/issues/1",
-    "https://github.com/zama-ai/fhevm",
+    "https://github.com/acme/fhevm/blob/8ff0de4/protocol-contracts/contracts/token/contracts/Token.sol#L102",
+    "https://github.com/acme/defi-app/pull/176",
+    "https://github.com/acme/fhevm/issues/1",
+    "https://github.com/acme/fhevm",
 ])
 def test_github_url_maps_to_github(url):
     assert native_mention_integration(url) == "GitHub"
@@ -89,10 +103,10 @@ def test_github_url_maps_to_github(url):
 
 @pytest.mark.parametrize("url", [
     DRIVE_URL,
-    "https://linear.app/zama/settings",
+    "https://linear.app/acme/settings",
     "https://github.com/features",
-    "https://zama-ai.slack.com/docs/TFM7VTADR/F0C51SURTG8",
-    "https://evil.example/zama-ai.slack.com/archives/C1/p1",
+    "https://acme.slack.com/docs/T00000000/F0000000001",
+    "https://evil.example/acme.slack.com/archives/C1/p1",
     "",
 ])
 def test_other_url_has_no_native_integration(url):
@@ -187,7 +201,7 @@ def test_eoi_pill_renders_plain_link(records):
     assert seg_to_md([["‣", [["eoi", eid]]]], eoi_names(ops[0]["args"])) == f"[I think we need to properly spec analytics]({SLACK_URL})"
 
 
-@pytest.mark.parametrize("url", [SLACK_URL, SLACK_URL + "?thread_ts=1790078504.822339&cid=C0AG8FS0EFP"])
+@pytest.mark.parametrize("url", [SLACK_URL, SLACK_URL + "?thread_ts=1790078504.822339&cid=C0000000001"])
 def test_plain_slack_hyperlink_is_refused(url):
     with pytest.raises(click.ClickException):
         md_to_segments(f"see [the thread]({url})", users={})
@@ -207,10 +221,14 @@ def test_other_hyperlink_is_accepted():
 
 
 def test_slack_docs_hyperlink_is_accepted():
-    url = "https://zama-ai.slack.com/docs/TFM7VTADR/F0C51SURTG8"
+    url = "https://acme.slack.com/docs/T00000000/F0000000001"
     assert md_to_segments(f"[canvas]({url})", users={}) == [["canvas", [["a", url]]]]
 
 
 def test_plain_github_hyperlink_is_refused():
     with pytest.raises(click.ClickException):
-        md_to_segments("[PR 176](https://github.com/zama-ai/confidential-defi/pull/176)", users={})
+        md_to_segments("[PR 176](https://github.com/acme/defi-app/pull/176)", users={})
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

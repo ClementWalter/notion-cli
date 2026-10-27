@@ -29,21 +29,17 @@ comments**, which the official API hides.
 
 ## How to invoke
 
-Invoke it as **`notion`** — on `$PATH` via a symlink in `~/.local/bin` onto this
-repo's `bin/notion`, so it always runs the current checkout: a `git pull`, or even
-an uncommitted edit, takes effect immediately with nothing to reinstall.
+Invoke it as **`notion`**, on `$PATH` through `claudine/scripts/link_clis.py`,
+which links this repo's `bin/notion` into `~/.local/bin`. The link points at the
+checkout, so a `git pull`, or even an uncommitted edit, takes effect at once.
 
 ```bash
 notion search "query"
 ```
 
-Examples in this doc are written that way. If `notion` is not on `$PATH`, run the
-bundled launcher `bin/notion` resolved against this skill's own directory (PEP 723
-— `uv` resolves deps inline on first run), or link it once:
-
-```bash
-ln -sfn <skill-dir>/bin/notion ~/.local/bin/notion
-```
+Examples in this doc are written that way. If `notion` is not on `$PATH`, run
+`<skill-dir>/bin/notion` (a symlink to the PEP 723 script; `uv` resolves its
+pinned dependencies on first run).
 
 ## Authentication
 
@@ -126,7 +122,7 @@ notion query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY fo
 
 notion schema <db_or_ds>       # property name → type (+ collection/view ids); types only, no option lists
 notion search "vault launch" --limit 10
-notion search "Clément" --created-after 2026-08-01   # client-side filter on creation time — the
+notion search "Ada" --created-after 2026-08-01   # client-side filter on creation time — the
                                              # closest proxy to a notification inbox (v3 has none);
                                              # catches new pages only, not edits or mentions in old ones
 notion comments <page_id>      # every page-level + inline discussion, open AND resolved (public API
@@ -285,7 +281,7 @@ notion edit <page> --section "1. What" --md what.md
 notion edit <page> --section "2. Crew" --md - <<'MD'
 | Role | Owner |
 |---|---|
-| Vault launch lead | @Clement Walter |
+| Vault launch lead | @Ada Lovelace |
 MD
 notion rewrite <page> --md body.md   # replace the whole page body (keeps properties)
 
@@ -310,6 +306,152 @@ notion check <block_id> --uncheck    # clear
 notion delete <page>                 # trash only — recoverable
 notion delete-block <block_id>
 ```
+
+## Recipes
+
+```bash
+# "What changed on the tracker since Monday?" — bodies only for rows edited since
+notion query <db_or_ds> --edited-after 2026-10-26 --with-body --select ID,Title,Status
+
+# "Read these five pages" — one call, not one per id
+notion pages <id1> <id2> <id3> <id4> <id5>
+
+# "Who is this uuid?" — cache first, one API call at most
+notion resolve <uuid>
+
+# "Which comments on this page are still open?"
+notion comments <page> --open-only
+
+# "Mark this to-do done" — find the block id, then tick it
+notion blocks <page>
+notion check <block_id>
+
+# "Put a TL;DR at the top of this hub page" without trashing its subpages
+notion append <page> --top --md - <<'MD'
+> [!💡:blue_bg] TL;DR — one sentence.
+MD
+
+# "Fix a number in this page" — then verify the block, not the cached render
+notion edit <page> "1,296,000" "1,335,000"
+notion page <page> --no-cache
+
+# "Create these 12 tracker rows" — one transaction per row, one command
+notion create --parent <db> --jsonl rows.jsonl
+
+# "Close the discussion I just answered"
+notion comment <page> "answered" --discussion <discussion_id>
+notion resolve-discussion <discussion_id>
+
+# Big pull: write to a file, filter there
+notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sort | uniq -c
+```
+
+## Gotchas
+
+- **Unofficial API** (`api/v3`, the web client's own): endpoint names drift —
+  writes go through `saveTransactionsFanout` today (`submitTransaction` is
+  gone). If a write starts 404-ing with an HTML body, probe the sibling
+  endpoint names before assuming breakage.
+- **Filters/sorts run client-side** over flattened values: `=` exact, `~`
+  case-insensitive contains, comparisons numeric when both sides parse as
+  numbers (ISO dates compare correctly as strings). Multiple `--filter` AND.
+- `query` needs a view on the database (any view); `schema` prints the
+  collection + view ids it resolved.
+- **Never hard-delete.** Regular delete only (`notion delete` / `delete-block`
+  / `alive=false`). That is the user Trash action — the page stays visible
+  and restorable. The CLI refuses `deleteBlocks` and any
+  `permanentlyDelete` / `permanently_deleted_time` payload.
+- Deleted pages still resolve (trash): `page` marks them `deleted: true`. A
+  deleted row is simply absent from `query` — no tombstone, no status — so
+  diff the ID column against a previous read and confirm each dropout with
+  `page <id> --props-only`.
+- `users [query]` lists the space's permission grants, not every member: an
+  empty result is not absence. `Owner=user://<id>` needs a Notion user id (a
+  Slack `U…` id fails with `400 incomplete_ancestor_path`, which reads like a
+  parent error). Fallback: `page <row> --raw` on a row the person already owns
+  and take the `u`-tagged segment, or grep `~/.config/notion-cli/cache/id_names.json`
+  (`users` bucket) for the name if any prior command already resolved it — no
+  extra API call. Where the Notion MCP is connected, `notion-get-users` with a
+  `query` returns name, email and id directly and is the one lookup that does
+  not depend on a prior read. A profile page's `created_by_id` is its
+  author, not its subject. A wrong id resolves silently, and even a correct
+  cached uuid (`user://<id>` or bare `<id>`) on `update --prop 'Owner=…'` can
+  silently no-op while reporting success — the cached display name
+  (`Owner=Ada Lovelace`) went through reliably in the same case. Prefer the
+  name over the uuid when both are available, and always re-read
+  `--props-only` after writing an Owner.
+- Callouts: every markdown callout must carry a background,
+  `> [!emoji:<color>_bg]`. `create`, `append`, `edit --section` and `rewrite`
+  refuse a callout without one, because a white callout is never wanted. The
+  parser also writes `format.callout_version: 2`. Without it, Notion renders a
+  callout white even when `block_color` is set, so `page --raw` can show a
+  colour the page does not display. `page` renders the colour back
+  (`> [!🌳:green_bg]`), so a `--write` round-trip keeps it.
+  `--icon` silently no-ops on many rows. `--md` can no-op on a reported
+  success: re-read `--raw` and check `content` is non-empty and the first child
+  is a `callout` with `format.block_color`. A `status`-type property can also
+  come back as the database's default rather than the value passed, on a create
+  that reports success and sets every other property: re-read `--props-only`
+  and set it again with `update --prop` when it did not stick.
+- `create --template` clones a template's body by deep-copying its blocks in
+  the same transaction (templates are just pages with `is_template: true`);
+  it does NOT call the API's async template instantiation, so there is no
+  placeholder-stacking race. Auto-increment IDs are still assigned lazily by
+  the server. The clone's callout colour is fixed and cannot be changed after.
+- `schema` prints types only. `status`/`select` option lists live in the raw
+  collection record: `resolve_collection(api, ref)[0]["schema"][pid]["options"]`.
+  A row's stored `status` can be a string no longer in that list (after an
+  option rename/delete); `query` renders the raw string.
+- Formula/rollup values are computed server-side and not stored on the row
+  record — they flatten to None.
+- Simple-table cells live in `table_row.properties[<column-id>]`, not
+  `title`. `edit` searches all properties (so a running-total cell matches)
+  and can splice the GFM `page` renders for a table to insert/delete rows.
+  `append` of a `| table |` creates a real Notion table; if the page already
+  has exactly one table with the same column count, rows are merged into it.
+  A `table_row` that carries `crdt_format_version` rejects any cell write,
+  whether a single `properties.<col>` set or the whole `properties` dict, with
+  `400 … Block property value updates must use high-level property
+  operations`. Such a table's cells are edited through the Notion MCP
+  `notion-update-page` `update_content`, where `old_str` is a unique
+  `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
+  `check` and `update --prop` write through `updateBlockPropertyValue`, the
+  op Notion's client uses, so they work on CRDT to-dos and CRDT database rows
+  (every Projects row carries `crdt_format_version`) and keep the block id.
+- `page --depth` default is 6; deeper nesting truncates with an explicit
+  `[…children truncated]` marker rather than silently.
+- HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
+  `ReadTimeout` after the write has already been submitted. The exception says
+  nothing about whether it landed: re-read the page before retrying, never
+  fire the same write again blind.
+- The client honors `Retry-After` and backs off on 429/5xx. If Notion
+  omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s). Only `loadPageChunk`
+  is paced client-side; other reads are single un-throttled v3 calls, so a
+  tight loop of `page` calls or a deep `blocks` walk can still exhaust the
+  retry budget.
+- `blocks <page> --depth 4` on a long page recurses into every linked page to
+  resolve titles and triggers sustained `syncRecordValues` 429s that outlast
+  the retries — stay at the default depth. A hand-rolled recursion over
+  `api.block(id)["content"]` hits the same wall.
+- `api.block(id)` (direct use from Python) needs the dashed UUID form; the
+  subcommands accept both dashed and bare 32-hex ids.
+- `edit` of a GFM table re-parses every cell through `md_to_segments`.
+  `@Name` stays a mention when that user is in the id cache; otherwise
+  pass `@user(uuid)` or `page --write` first.
+- A date mention renders in `page` as its bare ISO date, but it is its own
+  segment: `edit` never matches text that includes it (`no match`), and a
+  match ending next to it leaves the mention and its punctuation behind
+  (`( 2026-10-26)`). Remove or rewrite it through the Notion MCP
+  `notion-update-page` `update_content`, where `notion-fetch` renders it as
+  `<date start="…" />`.
+- `append "- item"` fails with `No such option '- '`: text that starts with a
+  dash is read as a flag. Pass it through `--md <file>` (or `--md -`).
+- `@[label](url)` in `create --md` / `append --md` writes a plain link, not the
+  link-preview chip that existing `## Sources` entries carry: `page --write`
+  then shows `[label](url)` without the `@`.
+- A brand-new discussion (`comment` without `--discussion`) is always created
+  `resolved: False` — there's no `create --resolved` shortcut; call
+  `resolve-discussion` right after if it should start closed.
 
 ## Notion-writes etiquette (project rules)
 
@@ -347,7 +489,7 @@ notion delete-block <block_id>
   batch of tracker rows — use `--jsonl`.
 - `@user(uuid)` / `@page(id)` always write mentions. After any
   `page`/`query`/`users` call, unique cached display names also work
-  (`@Clement Walter`, `--prop 'Owner=Clement Walter'`). `page --write`
+  (`@Ada Lovelace`, `--prop 'Owner=Ada Lovelace'`). `page --write`
   emits the uuid form if you need a guaranteed round-trip — and `@[label](url)`
   for link mentions, which a plain `page` renders as `[label](url)` so a digest
   reads cleanly. Rewriting a body from plain `page` output therefore downgrades
@@ -449,122 +591,17 @@ and `edit --section` (under a heading). Consequences:
   operations`, whatever the snippet, so don't retry `edit` on it. Edit the cell
   with the Notion MCP `notion-update-page` `update_content`, with `old_str` set
   to a unique `<td>…</td>` exactly as `notion-fetch` renders it (see the
-  Simple-table gotcha below).
+  Simple-table entry in Gotchas).
 - **Checkboxes** are not text: `edit` cannot reach them. Use
   `check <block_id> [--uncheck]` with an id from `blocks <page>` at default
   depth.
 - **Verify block-level writes** with `blocks <block_id>` or `page --no-cache`;
   a plain `page` can serve the pre-edit render (see the cache note above).
 
-## Gotchas
-
-- **Unofficial API** (`api/v3`, the web client's own): endpoint names drift —
-  writes go through `saveTransactionsFanout` today (`submitTransaction` is
-  gone). If a write starts 404-ing with an HTML body, probe the sibling
-  endpoint names before assuming breakage.
-- **Filters/sorts run client-side** over flattened values: `=` exact, `~`
-  case-insensitive contains, comparisons numeric when both sides parse as
-  numbers (ISO dates compare correctly as strings). Multiple `--filter` AND.
-- `query` needs a view on the database (any view); `schema` prints the
-  collection + view ids it resolved.
-- **Never hard-delete.** Regular delete only (`notion delete` / `delete-block`
-  / `alive=false`). That is the user Trash action — the page stays visible
-  and restorable. The CLI refuses `deleteBlocks` and any
-  `permanentlyDelete` / `permanently_deleted_time` payload.
-- Deleted pages still resolve (trash): `page` marks them `deleted: true`. A
-  deleted row is simply absent from `query` — no tombstone, no status — so
-  diff the ID column against a previous read and confirm each dropout with
-  `page <id> --props-only`.
-- `users [query]` lists the space's permission grants, not every member: an
-  empty result is not absence. `Owner=user://<id>` needs a Notion user id (a
-  Slack `U…` id fails with `400 incomplete_ancestor_path`, which reads like a
-  parent error). Fallback: `page <row> --raw` on a row the person already owns
-  and take the `u`-tagged segment, or grep `~/.config/notion-cli/cache/id_names.json`
-  (`users` bucket) for the name if any prior command already resolved it — no
-  extra API call. Where the Notion MCP is connected, `notion-get-users` with a
-  `query` returns name, email and id directly and is the one lookup that does
-  not depend on a prior read. A profile page's `created_by_id` is its
-  author, not its subject. A wrong id resolves silently, and even a correct
-  cached uuid (`user://<id>` or bare `<id>`) on `update --prop 'Owner=…'` can
-  silently no-op while reporting success — the cached display name
-  (`Owner=Mathieu Saugier`) went through reliably in the same case. Prefer the
-  name over the uuid when both are available, and always re-read
-  `--props-only` after writing an Owner.
-- Callouts: every markdown callout must carry a background,
-  `> [!emoji:<color>_bg]`. `create`, `append`, `edit --section` and `rewrite`
-  refuse a callout without one, because a white callout is never wanted. The
-  parser also writes `format.callout_version: 2`. Without it, Notion renders a
-  callout white even when `block_color` is set, so `page --raw` can show a
-  colour the page does not display. `page` renders the colour back
-  (`> [!🌳:green_bg]`), so a `--write` round-trip keeps it.
-  `--icon` silently no-ops on many rows. `--md` can no-op on a reported
-  success: re-read `--raw` and check `content` is non-empty and the first child
-  is a `callout` with `format.block_color`. A `status`-type property can also
-  come back as the database's default rather than the value passed, on a create
-  that reports success and sets every other property: re-read `--props-only`
-  and set it again with `update --prop` when it did not stick.
-- `create --template` clones a template's body by deep-copying its blocks in
-  the same transaction (templates are just pages with `is_template: true`);
-  it does NOT call the API's async template instantiation, so there is no
-  placeholder-stacking race. Auto-increment IDs are still assigned lazily by
-  the server. The clone's callout colour is fixed and cannot be changed after.
-- `schema` prints types only. `status`/`select` option lists live in the raw
-  collection record: `resolve_collection(api, ref)[0]["schema"][pid]["options"]`.
-  A row's stored `status` can be a string no longer in that list (after an
-  option rename/delete); `query` renders the raw string.
-- Formula/rollup values are computed server-side and not stored on the row
-  record — they flatten to None.
-- Simple-table cells live in `table_row.properties[<column-id>]`, not
-  `title`. `edit` searches all properties (so a running-total cell matches)
-  and can splice the GFM `page` renders for a table to insert/delete rows.
-  `append` of a `| table |` creates a real Notion table; if the page already
-  has exactly one table with the same column count, rows are merged into it.
-  A `table_row` that carries `crdt_format_version` rejects any cell write,
-  whether a single `properties.<col>` set or the whole `properties` dict, with
-  `400 … Block property value updates must use high-level property
-  operations`. Such a table's cells are edited through the Notion MCP
-  `notion-update-page` `update_content`, where `old_str` is a unique
-  `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
-  `check` and `update --prop` write through `updateBlockPropertyValue`, the
-  op Notion's client uses, so they work on CRDT to-dos and CRDT database rows
-  (every Projects row carries `crdt_format_version`) and keep the block id.
-- `page --depth` default is 6; deeper nesting truncates with an explicit
-  `[…children truncated]` marker rather than silently.
-- HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
-  `ReadTimeout` after the write has already been submitted. The exception says
-  nothing about whether it landed: re-read the page before retrying, never
-  fire the same write again blind.
-- The client honors `Retry-After` and backs off on 429/5xx. If Notion
-  omits `Retry-After`, wait is 8/16/32/60s (not 1/2/4s). Only `loadPageChunk`
-  is paced client-side; other reads are single un-throttled v3 calls, so a
-  tight loop of `page` calls or a deep `blocks` walk can still exhaust the
-  retry budget.
-- `blocks <page> --depth 4` on a long page recurses into every linked page to
-  resolve titles and triggers sustained `syncRecordValues` 429s that outlast
-  the retries — stay at the default depth. A hand-rolled recursion over
-  `api.block(id)["content"]` hits the same wall.
-- `api.block(id)` (direct use from Python) needs the dashed UUID form; the
-  subcommands accept both dashed and bare 32-hex ids.
-- `edit` of a GFM table re-parses every cell through `md_to_segments`.
-  `@Name` stays a mention when that user is in the id cache; otherwise
-  pass `@user(uuid)` or `page --write` first.
-- A date mention renders in `page` as its bare ISO date, but it is its own
-  segment: `edit` never matches text that includes it (`no match`), and a
-  match ending next to it leaves the mention and its punctuation behind
-  (`( 2026-10-26)`). Remove or rewrite it through the Notion MCP
-  `notion-update-page` `update_content`, where `notion-fetch` renders it as
-  `<date start="…" />`.
-- `append "- item"` fails with `No such option '- '`: text that starts with a
-  dash is read as a flag. Pass it through `--md <file>` (or `--md -`).
-- `@[label](url)` in `create --md` / `append --md` writes a plain link, not the
-  link-preview chip that existing `## Sources` entries carry: `page --write`
-  then shows `[label](url)` without the `@`.
-- A brand-new discussion (`comment` without `--discussion`) is always created
-  `resolved: False` — there's no `create --resolved` shortcut; call
-  `resolve-discussion` right after if it should start closed.
-
 ## Tests
 
+Each test file is a PEP 723 script with pinned dependencies:
+
 ```bash
-uv run --with pytest --with click --with requests --with pyyaml -- pytest tests/ -q
+for f in tests/test_*.py; do uv run --script "$f" -q; done
 ```

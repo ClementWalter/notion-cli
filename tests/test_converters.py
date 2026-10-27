@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for notion_cli's pure conversion layers (v3 record model).
 
 Covers the parts that do the token-saving work and are easy to get subtly
@@ -139,7 +153,7 @@ def test_md_seg_roundtrip_plain():
 
 # ---- link mentions -------------------------------------------------------------
 
-LINEAR_URL = "https://linear.app/zama/issue/SDK-285/add-polygon"
+LINEAR_URL = "https://linear.app/acme/issue/SDK-285/add-polygon"
 LM = ["‣", [["lm", {"href": LINEAR_URL, "title": "SDK-285", "link_provider": "Linear",
                     "icon_url": "https://linear.app/favicon.ico"}]]]
 
@@ -159,7 +173,7 @@ def test_link_provider_gsheet_by_path():
 
 
 def test_link_provider_slack_subdomain():
-    assert notion_cli.link_provider("https://zama-ai.slack.com/archives/C1/p1")[0] == "Slack"
+    assert notion_cli.link_provider("https://acme.slack.com/archives/C1/p1")[0] == "Slack"
 
 
 def test_link_provider_unknown_host_has_no_icon():
@@ -1026,3 +1040,7 @@ def test_prop_op_wraps_values_in_update_block_property_value():
         "command": "updateBlockPropertyValue",
         "args": {"primitiveOp": {"command": "update", "args": {"UO:Y": [["x"]]}}},
     }
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))
