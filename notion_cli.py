@@ -1,7 +1,15 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests", "click", "pycryptodome", "pyyaml"]
+# dependencies = [
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
 # ///
 """Token-efficient Notion CLI on the session-token (v3) API.
 
@@ -1821,7 +1829,7 @@ def make_matcher(expr: str, known: set[str]):
 # --------------------------------------------------------------------------
 
 
-@click.group()
+@click.group(epilog="\b\nExamples:\n  notion search \"vault launch\" --limit 5\n  notion page 1234567890abcdef1234567890abcdef --props-only\n  notion query 00000000000000000000000000001234 --select ID,Title,Status --json")
 @click.option("--debug", is_flag=True)
 def cli(debug):
     logging.basicConfig(level=logging.DEBUG if debug else logging.WARNING, stream=sys.stderr, format="%(levelname)s %(message)s")
@@ -1876,7 +1884,7 @@ def _store_pat(api_key: str | None) -> None:
     click.echo(f"ok: stored official API token (as {label})")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion auth --import\n  notion auth --space \"My Workspace\"\n  notion auth --pat")
 @click.option("--token", "token", default=None, help="token_v2 cookie value (v03:…)")
 @click.option("--import", "import_", is_flag=True, help=f"reuse the token stored in {LEGACY_TOKEN_PATH}")
 @click.option("--space", default=None, help="workspace name to bind (when the account has several)")
@@ -1997,7 +2005,7 @@ def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
                 yield token, label
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion login\n  notion login --source arc --space \"My Workspace\"")
 @click.option("--source", type=click.Choice(["auto", "notion", "chrome", "arc", "brave"]), default="auto", show_default=True)
 @click.option("--space", default=None, help="workspace name to bind (when the account has several)")
 def login(source, space):
@@ -2024,7 +2032,7 @@ def login(source, space):
     )
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion whoami")
 def whoami():
     """Show the bound user, workspace, and optional official API token."""
     cfg = load_config()
@@ -2042,7 +2050,7 @@ def whoami():
     click.echo(f"{session} — api_key: {'set' if key else 'missing (optional; agents use session)'}")
 
 
-@cli.group("cache")
+@cli.group("cache", epilog="\b\nExamples:\n  notion cache stats\n  notion cache clear 1234567890abcdef1234567890abcdef")
 def cache_cmd():
     """Inspect or clear the rendered-body cache.
 
@@ -2050,7 +2058,7 @@ def cache_cmd():
     entry can't be served — clearing is only ever needed to reclaim disk."""
 
 
-@cache_cmd.command("stats")
+@cache_cmd.command("stats", epilog="\b\nExamples:\n  notion cache stats")
 def cache_stats():
     """Entry count, page count and on-disk size."""
     if os.environ.get("NOTION_CLI_NO_CACHE"):
@@ -2071,7 +2079,7 @@ def cache_stats():
         click.echo(f"oldest entry: {(time.time() - oldest) / 3600:.1f}h old")
 
 
-@cache_cmd.command("clear")
+@cache_cmd.command("clear", epilog="\b\nExamples:\n  notion cache clear\n  notion cache clear 1234567890abcdef1234567890abcdef 1234567890abcdef1234567890abcd00")
 @click.argument("refs", nargs=-1)
 def cache_clear(refs):
     """Drop cached bodies — for the given pages, or all of them."""
@@ -2091,7 +2099,7 @@ def cache_clear(refs):
     click.echo(f"cleared {n_} entries")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion page https://www.notion.so/1234567890abcdef1234567890abcdef\n  notion page 1234567890abcdef1234567890abcdef --props-only\n  notion page 1234567890abcdef1234567890abcdef --write --no-cache\n  notion page 1234567890abcdef1234567890abcdef --json")
 @click.argument("ref")
 @click.option("--props-only", is_flag=True, help="skip the body (cheapest read)")
 @click.option("--no-props", is_flag=True, help="body only")
@@ -2148,7 +2156,7 @@ def page(ref, props_only, no_props, depth, as_json, raw, writeable, no_cache):
         click.echo(body)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion pages 1234567890abcdef1234567890abcdef 1234567890abcdef1234567890abcd00\n  notion pages 1234567890abcdef1234567890abcdef 1234567890abcdef1234567890abcd00 --json")
 @click.argument("ids", nargs=-1, required=True)
 @click.option("--depth", default=6, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
@@ -2181,7 +2189,7 @@ def pages(ids, depth, as_json, no_cache):
         click.echo(json.dumps(out, ensure_ascii=False, indent=1))
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion query 00000000000000000000000000001234 --select ID,Title,Status\n  notion query 00000000000000000000000000001234 --filter 'Status=Done' --filter 'ID>195'\n  notion query 00000000000000000000000000001234 --filter 'Title~vault' --sort 'ID:desc' --limit 20\n  notion query 00000000000000000000000000001234 --filter 'Status=In progress' --with-body\n  notion query 00000000000000000000000000001234 --edited-after 2026-07-20 --with-body --json")
 @click.argument("ref")
 @click.option("--select", "select_", help="comma-separated property names")
 @click.option("--filter", "filters", multiple=True, help="'Status=Done', 'ID>195', 'Title~vault', 'Due is_empty' (ANDed)")
@@ -2282,7 +2290,7 @@ def query(ref, select_, filters, sort_, limit, names, edited_after, with_body, b
         click.echo(json.dumps(out, ensure_ascii=False, indent=1))
 
 
-@cli.command(name="schema")
+@cli.command(name="schema", epilog="\b\nExamples:\n  notion schema 00000000000000000000000000001234\n  notion schema collection://00000000-0000-0000-0000-000000001234")
 @click.argument("ref")
 def schema_cmd(ref):
     """Print a database schema (property name → type) and its ids."""
@@ -2307,7 +2315,7 @@ def _epoch_ms(iso: str) -> int:
     raise click.ClickException(f"bad date {iso!r} — use YYYY-MM-DD or YYYY-MM-DD HH:MM")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion search \"vault launch\" --limit 10\n  notion search \"roadmap\" --created-after 2026-08-01 --json")
 @click.argument("text")
 @click.option("--limit", type=int, default=10, show_default=True)
 @click.option("--created-after", help="only pages created at/after this UTC date (client-side)")
@@ -2367,7 +2375,7 @@ def search(text, limit, created_after, edited_after, as_json):
         click.echo(json.dumps(out, ensure_ascii=False, indent=1))
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion comments 1234567890abcdef1234567890abcdef\n  notion comments 1234567890abcdef1234567890abcdef --open-only")
 @click.argument("page_ref")
 @click.option("--resolved/--open-only", default=True, help="include resolved discussions (default: yes)")
 def comments(page_ref, resolved):
@@ -2416,7 +2424,7 @@ def comments(page_ref, resolved):
             click.echo(f"  [{ts}] {names.get(c.get('created_by_id'), c.get('created_by_id', '?'))}: {seg_to_md(c.get('text'), names)}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion users\n  notion users ada")
 @click.argument("query_", metavar="[QUERY]", required=False)
 def users(query_):
     """List workspace members (from the space permission list)."""
@@ -2433,7 +2441,7 @@ def users(query_):
             click.echo(label)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion resolve 1234567890abcdef1234567890abcdef 12345678-90ab-cdef-1234-567890abcdef\n  notion resolve 1234567890abcdef1234567890abcdef --json")
 @click.argument("ids", nargs=-1, required=True)
 @click.option("--json", "as_json", is_flag=True)
 def resolve(ids, as_json):
@@ -2476,7 +2484,7 @@ def resolve(ids, as_json):
         click.echo(f"{pid}\t{out.get(pid, pid)}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion blocks 1234567890abcdef1234567890abcdef\n  notion blocks 12345678-90ab-cdef-1234-567890abcdef --depth 2")
 @click.argument("ref")
 @click.option("--depth", default=1, show_default=True)
 def blocks(ref, depth):
@@ -2526,7 +2534,7 @@ def move_to_top_ops(parent_id: str, new_ids: list[str], first_id: str | None, sp
     return ops
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion append 1234567890abcdef1234567890abcdef \"one liner\"\n  notion append 1234567890abcdef1234567890abcdef -- \"- a bullet line\"\n  notion append 1234567890abcdef1234567890abcdef --md notes.md\n  notion append 1234567890abcdef1234567890abcdef --top --md top.md\n  cat notes.md | notion append 1234567890abcdef1234567890abcdef --md -")
 @click.argument("page_ref")
 @click.argument("text", required=False)
 @click.option("--md", "md_file", help="markdown file to append ('-' = stdin)")
@@ -2586,7 +2594,7 @@ def _parse_prop_args(props: tuple[str, ...]) -> dict[str, str]:
     return out
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion create --parent 00000000000000000000000000001234 --prop 'Title=RFQ swap beta' --prop 'Status=Triage' --md body.md\n  notion create --parent 00000000000000000000000000001234 --prop 'Title=New item' --template 'AI new item'\n  notion create --parent 00000000000000000000000000001234 --jsonl rows.jsonl\n  notion create --parent 1234567890abcdef1234567890abcdef --prop 'Title=Notes' --body 'First line'")
 @click.option("--parent", "parent_ref", required=True, help="database (collection) or page to create under")
 @click.option("--prop", "props", multiple=True, help="Name=Value (schema-aware; repeatable; empty clears)")
 @click.option("--template", "template", help="clone this database template's body (id or title substring)")
@@ -2714,7 +2722,7 @@ def _create_jsonl(api: Api, parent_ref: str, jsonl_file: str) -> None:
         raise click.ClickException("jsonl contained no rows")
 
 
-@cli.command(name="templates")
+@cli.command(name="templates", epilog="\b\nExamples:\n  notion templates 00000000000000000000000000001234")
 @click.argument("ref")
 def templates_cmd(ref):
     """List a database's templates (id + title) for use with `create --template`."""
@@ -2728,7 +2736,7 @@ def templates_cmd(ref):
         click.echo(f"{title}\t{page_url(tid)}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion update 1234567890abcdef1234567890abcdef --prop 'Status=Done' --prop 'Due='\n  notion update 1234567890abcdef1234567890abcdef --prop 'Due=2026-07-01..2026-07-31'\n  notion update 1234567890abcdef1234567890abcdef --archive")
 @click.argument("page_ref")
 @click.option("--prop", "props", multiple=True, help="Name=Value (schema-aware; empty clears)")
 @click.option("--archive/--restore", default=None)
@@ -2791,7 +2799,7 @@ def _replace_section(api: Api, pid: str, heading: str, md: str) -> None:
     click.echo(f"replaced section {heading!r} ({len(top)} block(s))")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion edit 1234567890abcdef1234567890abcdef \"1,296,000\" \"1,335,000\"\n  notion edit 1234567890abcdef1234567890abcdef -- \"- [ ] ship it\" \"- [ ] ship it by Friday\"\n  notion edit 1234567890abcdef1234567890abcdef --section \"What\" --md what.md\n  notion edit 1234567890abcdef1234567890abcdef \"draft\" \"final\" --all")
 @click.argument("page_ref")
 @click.argument("old", required=False)
 @click.argument("new", required=False)
@@ -2897,7 +2905,7 @@ def rewrite_page_body(api: Api, pid: str, md: str, *, force: bool = False) -> in
     return len(top)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion rewrite 1234567890abcdef1234567890abcdef --md body.md\n  notion rewrite 1234567890abcdef1234567890abcdef --md -")
 @click.argument("page_ref")
 @click.option("--md", "md_file", help="markdown file ('-' = stdin)")
 @click.option("--body", help="inline markdown")
@@ -2925,7 +2933,7 @@ def trash_block(api: Api, block_ref: str) -> str:
     return bid
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion delete 1234567890abcdef1234567890abcdef")
 @click.argument("page_ref")
 def delete(page_ref):
     """Move a page to trash (regular delete). Recoverable. Never hard-deletes."""
@@ -2934,7 +2942,7 @@ def delete(page_ref):
     click.echo(f"trashed {page_url(bid)}")
 
 
-@cli.command(name="delete-block")
+@cli.command(name="delete-block", epilog="\b\nExamples:\n  notion delete-block 12345678-90ab-cdef-1234-567890abcdef")
 @click.argument("block_ref")
 def delete_block(block_ref):
     """Move a block to trash (alive=false + detach). Recoverable. Never hard-deletes."""
@@ -2952,7 +2960,7 @@ def check_ops(bid: str, uncheck: bool, space_id: str) -> list[dict]:
     ]
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion check 12345678-90ab-cdef-1234-567890abcdef\n  notion check 12345678-90ab-cdef-1234-567890abcdef --uncheck")
 @click.argument("block_ref")
 @click.option("--uncheck", is_flag=True, help="clear the checkbox instead of setting it")
 def check(block_ref, uncheck):
@@ -2972,7 +2980,7 @@ def check(block_ref, uncheck):
     click.echo(f"{'unchecked' if uncheck else 'checked'} {bid}")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  notion comment 1234567890abcdef1234567890abcdef \"done, see @page(1234567890abcdef1234567890abcd00)\"\n  notion comment 1234567890abcdef1234567890abcdef \"answered\" --discussion 12345678-90ab-cdef-1234-567890abcdef")
 @click.argument("page_ref")
 @click.argument("text")
 @click.option("--discussion", "discussion_id", help="reply into an existing discussion id")
@@ -3003,7 +3011,7 @@ def comment(page_ref, text, discussion_id):
     click.echo(f"comment {cid} added (discussion {discussion_id})")
 
 
-@cli.command(name="resolve-discussion")
+@cli.command(name="resolve-discussion", epilog="\b\nExamples:\n  notion resolve-discussion 12345678-90ab-cdef-1234-567890abcdef\n  notion resolve-discussion 12345678-90ab-cdef-1234-567890abcdef --reopen")
 @click.argument("discussion_id")
 @click.option("--reopen", is_flag=True, help="mark unresolved instead of resolved")
 def resolve_discussion(discussion_id, reopen):
@@ -3019,7 +3027,7 @@ def resolve_discussion(discussion_id, reopen):
     click.echo(f"{'reopened' if reopen else 'resolved'} discussion {did}")
 
 
-@cli.command("auth-status")
+@cli.command("auth-status", epilog="\b\nExamples:\n  notion auth-status\n  notion auth-status --json")
 @click.option("--json", "as_json", is_flag=True, help="Return credential metadata without secrets.")
 def auth_status(as_json: bool) -> None:
     """Inspect vault synchronization. Example: auth-status --json."""
@@ -3034,7 +3042,7 @@ def auth_status(as_json: bool) -> None:
                f"{metadata['source']}; pending={metadata['pending']}; local={metadata['legacy_available']}")
 
 
-@cli.command("auth-sync")
+@cli.command("auth-sync", epilog="\b\nExamples:\n  notion auth-sync")
 def auth_sync() -> None:
     """Retry pending vault sync or import local credentials. Example: auth-sync."""
     # Broker pending data is newer than any compatibility copy.
@@ -3042,7 +3050,7 @@ def auth_sync() -> None:
     if not config and CONFIG_PATH.exists():
         config = json.loads(CONFIG_PATH.read_text())
     if not config:
-        raise click.ClickException("No credentials available to synchronize; connect this tool in Brain.")
+        raise click.ClickException("No credentials available to synchronize; run `notion login`.")
     metadata = auth_broker("save", config)
     if not metadata:
         raise click.ClickException("Credential broker unavailable; local login is preserved.")
@@ -3079,7 +3087,7 @@ def _index_live_agents(agents: list[dict]) -> tuple[dict[str, dict], dict[str, l
     return by_id, by_name
 
 
-@cli.group("agents")
+@cli.group("agents", epilog="\b\nExamples:\n  notion agents list\n  notion agents get https://app.notion.com/agent/1234567890abcdef1234567890abcdef\n  notion agents plan agents/")
 def agents_cmd():
     """List, create, export, and apply Custom Agent settings (session cookie).
 
@@ -3089,7 +3097,7 @@ def agents_cmd():
     """
 
 
-@agents_cmd.command("list")
+@agents_cmd.command("list", epilog="\b\nExamples:\n  notion agents list\n  notion agents list --query triage --json")
 @click.option("--query", "q", default=None, help="case-insensitive name/description substring")
 @click.option("--all-types", is_flag=True, help="include autofill agents, not just custom_agent")
 @click.option("--include-deleted", is_flag=True)
@@ -3107,7 +3115,7 @@ def agents_list(q, all_types, include_deleted, as_json):
         click.echo(format_agent_line(row))
 
 
-@agents_cmd.command("get")
+@agents_cmd.command("get", epilog="\b\nExamples:\n  notion agents get https://app.notion.com/agent/1234567890abcdef1234567890abcdef\n  notion agents get 1234567890abcdef1234567890abcdef --json")
 @click.argument("ref")
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--raw", is_flag=True, help="untouched retrieve-agent JSON")
@@ -3184,7 +3192,7 @@ def _export_agents(dest: Path, refs: tuple[str, ...], query: str | None, all_typ
     save_agent_state(dest, state)
 
 
-@agents_cmd.command("export")
+@agents_cmd.command("export", epilog="\b\nExamples:\n  notion agents export agents/\n  notion agents export agents/ --id https://app.notion.com/agent/1234567890abcdef1234567890abcdef")
 @click.argument("dest", type=click.Path())
 @click.option("--id", "refs", multiple=True, help="restrict to these agent ids/URLs (repeatable)")
 @click.option("--query", "q", default=None)
@@ -3194,7 +3202,7 @@ def agents_export(dest, refs, q, all_types):
     _export_agents(Path(dest), refs, q, all_types)
 
 
-@agents_cmd.command("pull")
+@agents_cmd.command("pull", epilog="\b\nExamples:\n  notion agents pull agents/\n  notion agents pull agents/ --query triage")
 @click.argument("dest", type=click.Path())
 @click.option("--id", "refs", multiple=True)
 @click.option("--query", "q", default=None)
@@ -3243,14 +3251,14 @@ def _plan_from_dir(src: Path):
     return planned
 
 
-@agents_cmd.command("plan")
+@agents_cmd.command("plan", epilog="\b\nExamples:\n  notion agents plan agents/")
 @click.argument("src", type=click.Path(exists=True))
 def agents_plan(src):
     """Diff desired-state yaml in SRC against live agents. No writes."""
     _plan_from_dir(Path(src))
 
 
-@agents_cmd.command("apply")
+@agents_cmd.command("apply", epilog="\b\nExamples:\n  notion agents apply agents/")
 @click.argument("src", type=click.Path(exists=True))
 def agents_apply(src):
     """Create agents and apply settings (name, model, connections, triggers, status, instructions).
@@ -3330,13 +3338,6 @@ def agents_apply(src):
     save_agent_state(state_dir, state)
     click.echo(f"applied {applied} change(s); skipped {skipped} unsupported/hidden")
 
-
-# Provider commands share the same execution policy as the app and MCP.
-from pathlib import Path as _PolicyPath
-import sys as _policy_sys
-_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
-from onebrain_policy import install as _install_onebrain_policy
-_install_onebrain_policy(cli, 'notion')
 
 if __name__ == "__main__":
     cli()

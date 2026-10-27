@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for `check_ops`, the transaction that ticks a to-do block.
 
 A raw `set` on `properties.checked` is rejected on CRDT to-dos, so the
@@ -32,3 +46,7 @@ def test_uncheck_sets_checked_no():
 
 def test_check_bumps_last_edited_time():
     assert set(check_ops("blk", False, "space")[1]["args"]) == {"last_edited_time"}
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

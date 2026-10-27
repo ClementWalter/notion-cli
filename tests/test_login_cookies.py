@@ -1,10 +1,27 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Tests for the cookie-store query `login` uses to find token_v2 candidates."""
 
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
-from notion_cli import TOKEN_COOKIE_SQL
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from notion_cli import TOKEN_COOKIE_SQL  # noqa: E402
 
 
 @pytest.fixture
@@ -26,3 +43,7 @@ def cookie_store():
 
 def test_reads_tokens_from_both_notion_hosts_freshest_first(cookie_store):
     assert [v for (v,) in cookie_store.execute(TOKEN_COOKIE_SQL)] == [b"sso", b"legacy"]
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

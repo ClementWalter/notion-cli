@@ -1,5 +1,7 @@
 # notion-cli
 
+**Visibility: public.**
+
 Terminal access to Notion using your browser session cookie (`token_v2`). No
 workspace integration, no OAuth flow, no admin approval — it reuses the login
 already on your machine (Notion desktop app or any Chromium browser) and talks
@@ -218,7 +220,7 @@ auto-increment IDs, formula/rollup limits).
 ## Running tests
 
 ```bash
-uv run --with pytest --with click --with requests --with pycryptodome --with pyyaml -- pytest tests/ -q
+for f in tests/test_*.py; do uv run --script "$f" -q; done
 ```
 
 Tests cover the pure conversion layers (segment rendering, markdown parsing,

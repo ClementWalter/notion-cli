@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for Custom Agent desired-state helpers. No network."""
 
 import sys
@@ -299,3 +313,6 @@ def test_new_workflow_records_maps_connections_to_modules():
     assert page["parent_id"] == UUID
     assert page["parent_table"] == "workflow"
 
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

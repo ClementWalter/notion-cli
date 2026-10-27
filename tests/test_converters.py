@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for notion_cli's pure conversion layers (v3 record model).
 
 Covers the parts that do the token-saving work and are easy to get subtly
@@ -1026,3 +1040,7 @@ def test_prop_op_wraps_values_in_update_block_property_value():
         "command": "updateBlockPropertyValue",
         "args": {"primitiveOp": {"command": "update", "args": {"UO:Y": [["x"]]}}},
     }
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

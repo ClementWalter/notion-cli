@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for `move_to_top_ops`, which backs `append --top`.
 
 New blocks are appended at the end by `blocks_to_ops`, then each one is moved
@@ -35,3 +49,7 @@ def test_ops_target_the_page_content_list(ops):
 
 def test_empty_page_keeps_the_appended_order():
     assert move_to_top_ops("page", ["a"], None, "space") == []
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

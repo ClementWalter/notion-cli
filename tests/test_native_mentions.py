@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "pytest==9.1.1",
+#     "requests==2.34.2",
+#     "click==8.4.2",
+#     "pycryptodome==3.23.0",
+#     "pyyaml==6.0.3",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Unit tests for native Slack/Linear/GitHub mentions: `@[label](url)` chips to
 Slack messages, Linear issues or GitHub objects are upgraded to `eoi` pills backed by `external_object_instance` records built from
 Notion's `unfurlUrl` response, and rendered back as `@[message](url)`. No network.
@@ -214,3 +228,7 @@ def test_slack_docs_hyperlink_is_accepted():
 def test_plain_github_hyperlink_is_refused():
     with pytest.raises(click.ClickException):
         md_to_segments("[PR 176](https://github.com/acme/defi-app/pull/176)", users={})
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))
