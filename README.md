@@ -251,3 +251,9 @@ read-only service account (token in the macOS Keychain, or
 a day, so no token sits in cleartext on disk and 1Password never prompts. After
 rotating the token in the vault, run `claudine-secret purge`. The interactive
 login still works and writes the local file, which then takes precedence.
+
+## Privacy Policy
+
+The Claude Desktop extension built from this repository keeps your data on your
+Mac and talks only to the service it connects to. Full policy:
+<https://clementwalter.github.io/claude-extensions/privacy/>
