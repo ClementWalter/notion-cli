@@ -314,10 +314,11 @@ notion check <block_id> --uncheck    # clear
 # Inline linked view of a database on a page: rows stay in the source
 # database, the view only filters, sorts and picks columns. --filter takes the
 # `query` DSL but Notion evaluates it (select/status: = !=; text/title/url:
-# = != ~; number: = != > >= < <=; any type: is_empty / is_not_empty).
+# = != ~; number: = != > >= < <=; relation: = != <page id or url>;
+# any type: is_empty / is_not_empty).
 # Lands at the end of the page, at the end of a heading's section, or on top.
 notion view <page> --db <db_or_ds> --name 'Morpho vaults' \
-  --filter 'Vault Infra=Morpho' --sort Priority \
+  --filter 'Vault infra=<infra page url>' --sort Priority \
   --show 'Launch,Curator,Stage,Batch' --section 'Vaults in the pipeline'
 
 notion delete <page>                 # trash only — recoverable
@@ -379,8 +380,9 @@ notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sor
   unknown one returns no rows instead of an error. `view` therefore maps the DSL
   to the operators measured against known row counts, sends number values as
   numbers (a string value matches nothing), refuses a select/status value that
-  is not an option, and refuses filters on other property types (person,
-  relation, date, multi-select): set those in the app. It creates table views
+  is not an option, sends a relation's page as its dashed id (a bare string
+  silently drops the filter), and refuses filters on other property types
+  (person, date, multi-select): set those in the app. It creates table views
   only. Property names are matched with surrounding spaces ignored, since a
   name like `" Batch"` is legal and invisible in the app. A `rewrite` or
   `edit --section` keeps the view in place.

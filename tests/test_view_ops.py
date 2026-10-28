@@ -41,6 +41,7 @@ def coll():
             "u1": {"name": "Contract", "type": "url"},
             "p1": {"name": "Owner", "type": "person"},
             "d1": {"name": " Batch", "type": "date"},
+            "r1": {"name": "Infra", "type": "relation"},
         },
     }
 
@@ -62,6 +63,8 @@ def coll():
         ("Budget>=50000", "number_greater_than_or_equal_to"),
         ("Budget<50000", "number_less_than"),
         ("Budget<=50000", "number_less_than_or_equal_to"),
+        ("Infra=1234567890abcdef1234567890abcdef", "relation_contains"),
+        ("Infra!=1234567890abcdef1234567890abcdef", "relation_does_not_contain"),
         ("Owner is_empty", "is_empty"),
         ("Stage is_not_empty", "is_not_empty"),
     ],
@@ -82,6 +85,18 @@ def test_number_filter_value_is_numeric(coll):
     assert view_filter("Budget>=50000", coll)["filter"]["value"]["value"] == 50000
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "1234567890abcdef1234567890abcdef",
+        "12345678-90ab-cdef-1234-567890abcdef",
+        "https://www.notion.so/Some-page-1234567890abcdef1234567890abcdef",
+    ],
+)
+def test_relation_filter_value_is_dashed_page_id(coll, ref):
+    assert view_filter(f"Infra={ref}", coll)["filter"]["value"]["value"] == "12345678-90ab-cdef-1234-567890abcdef"
+
+
 def test_empty_filter_has_no_value(coll):
     assert "value" not in view_filter("Owner is_empty", coll)["filter"]
 
@@ -94,6 +109,8 @@ def test_empty_filter_has_no_value(coll):
         ("Stage~Disc", "select property"),
         ("Owner=someone", "only is_empty"),
         ("Budget=lots", "number property"),
+        ("Infra=not-a-page", "could not extract a Notion id"),
+        ("Infra~1234567890abcdef1234567890abcdef", "relation property"),
         ("no operator here", "cannot parse"),
     ],
 )
@@ -135,7 +152,7 @@ def test_view_shows_listed_properties_in_order(ops):
 
 
 def test_view_hides_unlisted_properties(ops):
-    assert [p["property"] for p in ops[0]["args"]["format"]["table_properties"] if not p["visible"]] == ["st", "n1", "u1", "p1", "d1"]
+    assert [p["property"] for p in ops[0]["args"]["format"]["table_properties"] if not p["visible"]] == ["st", "n1", "u1", "p1", "d1", "r1"]
 
 
 def test_block_points_at_the_view(ops):

@@ -2770,6 +2770,7 @@ _VIEW_OPERATORS: dict[str, dict[str, str]] = {
         "<": "number_less_than",
         "<=": "number_less_than_or_equal_to",
     },
+    "relation": {"=": "relation_contains", "!=": "relation_does_not_contain"},
 }
 
 
@@ -2810,6 +2811,9 @@ def view_filter(expr: str, coll: dict) -> dict:
             raise click.ClickException(f"{prop!r} is a number property, got {val!r}") from None
         # a string value is silently matched against nothing
         value = int(num) if num.is_integer() else num
+    elif ptype == "relation":
+        # dashed page id only: a bare string drops the filter, an undashed id matches nothing
+        value = parse_id(val)
     elif ptype in ("select", "status"):
         options = [o.get("value") for o in coll["schema"][pid].get("options") or []]
         if val not in options:
@@ -2890,11 +2894,11 @@ def linked_view_ops(
     ], block_id
 
 
-@cli.command(epilog="\b\nExamples:\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --name 'Open items' --filter 'Status=Triage' --sort 'Priority' --show 'Title,Status,Priority'\n  notion view 1234567890abcdef1234567890abcdef --db collection://00000000-0000-0000-0000-000000001234 --name Pipeline --section 'Vaults in the pipeline'\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --filter 'Budget>=50000' --top --json")
+@cli.command(epilog="\b\nExamples:\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --name 'Open items' --filter 'Status=Triage' --sort 'Priority' --show 'Title,Status,Priority'\n  notion view 1234567890abcdef1234567890abcdef --db collection://00000000-0000-0000-0000-000000001234 --name Pipeline --filter 'Vault infra=1234567890abcdef1234567890abcdef' --section 'Vaults in the pipeline'\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --filter 'Budget>=50000' --top --json")
 @click.argument("page_ref")
 @click.option("--db", "db_ref", required=True, help="database url, data-source id or collection://… to show")
 @click.option("--name", help="view name (default: the database name)")
-@click.option("--filter", "filters", multiple=True, help="'Status=Done', 'Budget>=50000', 'Title~vault', 'Due is_empty' (ANDed, evaluated by Notion)")
+@click.option("--filter", "filters", multiple=True, help="'Status=Done', 'Budget>=50000', 'Title~vault', 'Project=<page id or url>', 'Due is_empty' (ANDed, evaluated by Notion)")
 @click.option("--sort", "sorts", multiple=True, help="'Prop' or 'Prop:desc'; repeat for tie-breakers")
 @click.option("--show", help="comma-separated properties to display, in order; the rest are hidden")
 @click.option("--section", help="place the view at the end of the section under this heading")
