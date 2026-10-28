@@ -55,6 +55,15 @@ API_BASE = "https://www.notion.so/api/v3"
 CONFIG_PATH = Path.home() / ".config" / "notion-cli" / "config.json"
 
 VAULT_DOCUMENT = "notion-cli config.json"
+# How to get a session back, phrased for a terminal and for Claude Desktop,
+# where `connect` is a tool. The keychain prompt is named because denying it
+# looks exactly like being signed out.
+CONNECT_HELP = (
+    "Sign in at https://www.notion.so in Google Chrome (or Arc, Brave, Edge), then run "
+    "`notion connect` (the `connect` tool in Claude). If macOS asks to let `security` use "
+    'the "Chrome Safe Storage" keychain item, type your Mac password and click Always Allow.'
+)
+AGENTS_DIR = Path.home() / "Downloads" / "Notion" / "agents"
 LEGACY_TOKEN_PATH = Path.home() / ".config" / "notion-reader" / "config.json"
 ID_NAMES_PATH = Path.home() / ".config" / "notion-cli" / "cache" / "id_names.json"
 BODY_CACHE_PATH = Path.home() / ".config" / "notion-cli" / "cache" / "bodies.sqlite3"
@@ -95,6 +104,12 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         return json.loads(CONFIG_PATH.read_text())
     return {}
+
+
+def env_value(name: str) -> str | None:
+    """$name, or None when empty or an unfilled `${user_config.…}` extension setting."""
+    value = (os.environ.get(name) or "").strip()
+    return None if not value or value.startswith("${") else value
 
 
 def auth_broker(operation: str, config: dict | None = None) -> dict:
@@ -431,16 +446,15 @@ class Api:
     (HTTP 200 with no records), which reads like missing content but isn't.
     """
 
-    def __init__(self, cfg: dict):
-        token = os.environ.get("NOTION_TOKEN_V2") or cfg.get("token_v2")
+    def __init__(self, cfg: dict, refresh: Any = None):
+        token = env_value("NOTION_TOKEN_V2") or cfg.get("token_v2")
         if not token:
-            raise click.ClickException(
-                "No token. Run `notion auth` (paste token_v2 from the "
-                "browser: devtools → Application → Cookies → notion.so → "
-                "token_v2), or `auth --import` to reuse a stored one."
-            )
+            raise click.ClickException("Not connected to Notion. " + CONNECT_HELP)
         self.space_id = cfg.get("space_id")
+        self.space_name = cfg.get("space_name")
         self.user_id = cfg.get("user_id")
+        # Called once on a 401: returns a fresh token_v2 or None.
+        self.refresh = refresh
         self.s = requests.Session()
         self.s.headers.update({"Cookie": f"token_v2={token}", "Content-Type": "application/json"})
         if self.user_id:
@@ -476,7 +490,12 @@ class Api:
                 delay = min(delay * 2, 60)
                 continue
             if resp.status_code == 401:
-                raise click.ClickException("401 — token_v2 expired; re-run `auth`")
+                fresh = self.refresh() if self.refresh else None
+                self.refresh = None
+                if fresh:
+                    self.s.headers["Cookie"] = f"token_v2={fresh}"
+                    continue
+                raise click.ClickException("Notion session expired. " + CONNECT_HELP)
             if not resp.ok:
                 raise click.ClickException(http_error_message(resp.status_code, path, resp.text))
             return resp.json()
@@ -1836,35 +1855,98 @@ def cli(debug):
 
 
 def api_or_die() -> Api:
-    return Api(load_config())
+    """Api for the bound session; with none stored, the signed-in browser's is imported."""
+    cfg = load_config()
+    if env_value("NOTION_TOKEN_V2"):
+        return Api(apply_space_setting(cfg, env_value("NOTION_TOKEN_V2")))
+    if not cfg.get("token_v2"):
+        cfg = connect_from_browser(env_value("NOTION_SPACE"))["config"]
+    return Api(apply_space_setting(cfg, cfg["token_v2"]), refresh=refresh_from_browser)
+
+
+def list_spaces(token: str) -> list[dict]:
+    """Every (account, workspace) pair a token_v2 can act in; raises if Notion rejects it."""
+    r = requests.post(f"{API_BASE}/getSpaces", json={}, headers={"Cookie": f"token_v2={token.strip()}"}, timeout=30)
+    if not r.ok:
+        raise click.ClickException(f"Notion rejected the session ({r.status_code}). " + CONNECT_HELP)
+    spaces = []
+    for uid, tables in r.json().items():
+        if not isinstance(tables, dict):
+            continue
+        user = unwrap(tables.get("notion_user", {}).get(uid, {}))
+        for sid, wrap in tables.get("space", {}).items():
+            spaces.append({
+                "user_id": uid, "email": user.get("email"), "user_name": user.get("name"),
+                "space_id": sid, "space_name": unwrap(wrap).get("name") or sid,
+            })
+    if not spaces:
+        raise click.ClickException("This Notion account has no workspace.")
+    return spaces
+
+
+def match_spaces(spaces: list[dict], space: str | None) -> list[dict]:
+    """Workspaces whose id equals, or name contains, `space` (all of them when None)."""
+    if not space:
+        return spaces
+    want = space.strip().lower()
+    hits = [s for s in spaces if want in (s["space_id"].lower(), s["space_id"].replace("-", "").lower())]
+    hits = hits or [s for s in spaces if want in s["space_name"].lower()]
+    if not hits:
+        names = ", ".join(sorted({s["space_name"] for s in spaces}))
+        raise click.ClickException(f"No Notion workspace matches {space!r}. Workspaces: {names}.")
+    return hits
+
+
+def _quiet_match(spaces: list[dict], space: str) -> list[dict]:
+    """match_spaces without the no-match error."""
+    try:
+        return match_spaces(spaces, space)
+    except click.ClickException:
+        return []
+
+
+def choose_space(spaces: list[dict], space: str | None, current: str | None) -> dict:
+    """The workspace to bind without asking: the named one, else the bound one, else the first."""
+    hits = match_spaces(spaces, space)
+    return next((s for s in hits if s["space_id"] == current), hits[0])
+
+
+def apply_space_setting(cfg: dict, token: str) -> dict:
+    """Bind $NOTION_SPACE for this run when it names another workspace than the saved one,
+    or any workspace when none is saved (a token given only through the environment)."""
+    want = env_value("NOTION_SPACE")
+    saved = {"space_id": cfg.get("space_id") or "", "space_name": cfg.get("space_name") or ""}
+    if cfg.get("space_id") and (not want or _quiet_match([saved], want)):
+        return cfg
+    picked = choose_space(list_spaces(token), want, None)
+    return {**cfg, **{k: picked[k] for k in ("user_id", "space_id", "space_name")}}
+
+
+def bind_session(token: str, space: str | None, source: str | None = None) -> dict:
+    """Validate a token_v2, bind a workspace without prompting, and save the config."""
+    token = token.strip()
+    spaces = list_spaces(token)
+    existing = load_config()
+    picked = choose_space(spaces, space, existing.get("space_id"))
+    cfg = {**existing, "token_v2": token, **{k: picked[k] for k in ("user_id", "space_id", "space_name")}}
+    save_config(cfg)
+    return {
+        "connected": True, "browser": source, "user": picked["user_name"], "email": picked["email"],
+        "space": picked["space_name"], "space_id": picked["space_id"],
+        "other_spaces": [s["space_name"] for s in spaces if s["space_id"] != picked["space_id"]],
+        "config": cfg,
+    }
 
 
 def _bind_and_save(token: str, space: str | None) -> None:
-    """Validate a token_v2, pick the (user, space) pair, persist the config."""
-    token = token.strip()
-    r = requests.post(f"{API_BASE}/getSpaces", json={}, headers={"Cookie": f"token_v2={token}"}, timeout=30)
-    if not r.ok:
-        raise click.ClickException(f"token rejected ({r.status_code})")
-    candidates: list[tuple[str, str, str]] = []  # (user_id, space_id, space_name)
-    for uid, tables in r.json().items():
-        for sid, wrap in tables.get("space", {}).items():
-            v = unwrap(wrap)
-            candidates.append((uid, sid, v.get("name") or sid))
-    if not candidates:
-        raise click.ClickException("token valid but no spaces visible")
-    if space:
-        candidates = [c for c in candidates if space.lower() in c[2].lower()]
-        if not candidates:
-            raise click.ClickException(f"no space matching {space!r}")
-    if len(candidates) > 1:
-        for i, (_, sid, name) in enumerate(candidates):
-            click.echo(f"  [{i}] {name} ({sid})")
-        idx = click.prompt("pick a space", type=int)
-        candidates = [candidates[idx]]
-    uid, sid, name = candidates[0]
-    existing = load_config()
-    save_config({**existing, "token_v2": token, "user_id": uid, "space_id": sid, "space_name": name})
-    click.echo(f"ok: bound to space {name!r} ({sid}) as user {uid}")
+    """Terminal binding: asks which workspace when several match."""
+    spaces = match_spaces(list_spaces(token), space)
+    if len(spaces) > 1:
+        for i, s in enumerate(spaces):
+            click.echo(f"  [{i}] {s['space_name']} ({s['space_id']})")
+        space = spaces[click.prompt("pick a space", type=int)]["space_id"]
+    done = bind_session(token, space)
+    click.echo(f"ok: bound to space {done['space']!r} ({done['space_id']}) as {done['email'] or done['user']}")
 
 
 def _store_pat(api_key: str | None) -> None:
@@ -1894,7 +1976,7 @@ def auth(token, import_, space, pat, api_key):
     """Store a token_v2 you provide (pasted or imported) and bind it.
 
     Get the cookie from a logged-in browser: devtools → Application → Cookies
-    → https://www.notion.so → token_v2. For automatic extraction see `login`.
+    → https://www.notion.so → token_v2. For automatic extraction see `connect`.
     Add `--pat` to store an official API personal access token. Optional:
     `agents` uses the session cookie. A PAT is only needed for credit_limit.
     """
@@ -1914,37 +1996,55 @@ def auth(token, import_, space, pat, api_key):
 # Chromium cookie stores this CLI knows how to open, in preference order:
 # (label, cookie sqlite path, keychain service holding the encryption key)
 _COOKIE_SOURCES = [
-    ("notion", "~/Library/Application Support/Notion/Cookies", "Notion Safe Storage"),
-    ("notion", "~/Library/Application Support/Notion/Partitions/notion/Cookies", "Notion Safe Storage"),
     ("chrome", "~/Library/Application Support/Google/Chrome/Default/Cookies", "Chrome Safe Storage"),
     ("chrome", "~/Library/Application Support/Google/Chrome/Profile 1/Cookies", "Chrome Safe Storage"),
+    ("chrome", "~/Library/Application Support/Google/Chrome/Profile 2/Cookies", "Chrome Safe Storage"),
     ("arc", "~/Library/Application Support/Arc/User Data/Default/Cookies", "Arc Safe Storage"),
     ("brave", "~/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cookies", "Brave Safe Storage"),
+    ("edge", "~/Library/Application Support/Microsoft Edge/Default/Cookies", "Microsoft Edge Safe Storage"),
+    ("notion", "~/Library/Application Support/Notion/Cookies", "Notion Safe Storage"),
+    ("notion", "~/Library/Application Support/Notion/Partitions/notion/Cookies", "Notion Safe Storage"),
 ]
+SOURCE_LABELS = ["auto", "chrome", "arc", "brave", "edge", "notion"]
 
 
-def _decrypt_chromium_cookie(encrypted: bytes, keychain_service: str) -> str | None:
-    """Decrypt a macOS-Chromium `v10` cookie value using the app's keychain key
+def keychain_secret(service: str) -> str | None:
+    """The browser's cookie-encryption secret from the macOS keychain, or None if refused.
+
+    `security` pops a GUI prompt when it is not yet allowed; the timeout turns
+    an unanswered prompt into an error naming the button to click.
+    """
+    import subprocess
+
+    try:
+        pw = subprocess.run(
+            ["security", "find-generic-password", "-ws", service],
+            capture_output=True, text=True, timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        raise click.ClickException(
+            f'The macOS prompt for the "{service}" keychain item was not answered. Retry, '
+            "type your Mac password and click Always Allow."
+        )
+    except OSError:
+        return None
+    return pw.stdout.strip() if pw.returncode == 0 else None
+
+
+def _decrypt_chromium_cookie(encrypted: bytes, secret: str) -> str | None:
+    """Decrypt a macOS-Chromium `v10` cookie value with the app's keychain secret
     (AES-128-CBC, PBKDF2 'saltysalt'/1003 — the scheme every Chromium fork and
     Electron app uses on macOS). Newer Chromium prepends a 32-byte SHA-256 of
     the host key to the plaintext; both layouts are handled."""
-    import subprocess
-
     from Crypto.Cipher import AES
     from Crypto.Protocol.KDF import PBKDF2
 
     if not encrypted.startswith(b"v10"):
         return None
-    # `security` pops a GUI prompt when the calling terminal lacks keychain
-    # access — the timeout turns a stuck prompt into a clean error
-    pw = subprocess.run(
-        ["security", "find-generic-password", "-ws", keychain_service],
-        capture_output=True, text=True, timeout=45,
-    )
-    if pw.returncode != 0:
-        return None
-    key = PBKDF2(pw.stdout.strip().encode(), b"saltysalt", dkLen=16, count=1003)
+    key = PBKDF2(secret.encode(), b"saltysalt", dkLen=16, count=1003)
     plain = AES.new(key, AES.MODE_CBC, b" " * 16).decrypt(encrypted[3:])
+    if not plain or plain[-1] > 16:
+        return None
     plain = plain[: -plain[-1]]  # strip PKCS#7 padding
     for candidate in (plain, plain[32:]):
         try:
@@ -1965,23 +2065,15 @@ TOKEN_COOKIE_SQL = (
 )
 
 
-def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
-    """Yield (token_v2, source_label) candidates from local cookie stores."""
+def stored_cookies(db: Path) -> list[bytes]:
+    """Encrypted token_v2 values in one Chromium cookie store, freshest first."""
     import shutil
-    import sqlite3
-    import subprocess
     import tempfile
 
-    seen: set[str] = set()
-    for label, path, service in _COOKIE_SOURCES:
-        if source not in ("auto", label):
-            continue
-        db = Path(path).expanduser()
-        if not db.exists():
-            continue
-        # the store is locked while the app runs — always work on a copy
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td) / "Cookies"
+    # the store is locked while the app runs — always work on a copy
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td) / "Cookies"
+        try:
             shutil.copy2(db, tmp)
             for wal in ("-wal", "-shm"):
                 side = Path(str(db) + wal)
@@ -1992,62 +2084,141 @@ def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
             # force bytes so sqlite doesn't try (and fail) to decode UTF-8
             conn.text_factory = bytes
             rows = conn.execute(TOKEN_COOKIE_SQL).fetchall()
-        for (enc,) in rows:
-            try:
-                token = _decrypt_chromium_cookie(bytes(enc), service)
-            except subprocess.TimeoutExpired:
-                raise click.ClickException(
-                    f"keychain prompt for {service!r} timed out — run this in a "
-                    "real terminal and click 'Allow' on the macOS dialog"
-                )
+            conn.close()
+        except (OSError, sqlite3.Error) as exc:
+            log.debug("cannot read %s: %s", db, exc)
+            return []
+    return [bytes(enc) for (enc,) in rows]
+
+
+def iter_tokens(source: str) -> Iterator[tuple[str, str]]:
+    """Yield (token_v2, source_label) candidates from local cookie stores.
+
+    The keychain is read only for a store that holds a Notion cookie, and once
+    per keychain item, so a beginner sees at most one macOS prompt per browser.
+    """
+    seen: set[str] = set()
+    secrets: dict[str, str | None] = {}
+    for label, path, service in _COOKIE_SOURCES:
+        if source not in ("auto", label):
+            continue
+        db = Path(path).expanduser()
+        if not db.exists():
+            continue
+        rows = stored_cookies(db)
+        if not rows:
+            continue
+        if service not in secrets:
+            secrets[service] = keychain_secret(service)
+        if not secrets[service]:
+            continue
+        for enc in rows:
+            token = _decrypt_chromium_cookie(enc, secrets[service])
             if token and token not in seen:
                 seen.add(token)
                 yield token, label
 
 
+def connect_from_browser(space: str | None, source: str = "auto") -> dict:
+    """Bind the first browser session Notion accepts; the reply of `connect`."""
+    for token, label in iter_tokens(source):
+        try:
+            return bind_session(token, space, label)
+        except click.ClickException as exc:
+            if "No Notion workspace matches" in exc.message:
+                raise
+            log.info("session from %s rejected, trying the next browser", label)
+    raise click.ClickException("No signed-in Notion session found in Chrome, Arc, Brave, Edge or the Notion app. " + CONNECT_HELP)
+
+
+def refresh_from_browser() -> str | None:
+    """A fresh token_v2 from the browser, bound to the same workspace, or None."""
+    try:
+        return connect_from_browser(load_config().get("space_id"))["config"]["token_v2"]
+    except click.ClickException as exc:
+        log.info("no fresh Notion session in the browser: %s", exc.message)
+        return None
+
+
+@cli.command(epilog="\b\nExamples:\n  notion connect\n  notion connect --space \"My Workspace\" --json")
+@click.option("--space", default=None, help="Workspace name or id to use when the account has several (see `spaces`).")
+@click.option("--source", type=click.Choice(SOURCE_LABELS), default="auto", show_default=True,
+              help="Browser to read the session from.")
+@click.option("--json", "as_json", is_flag=True)
+def connect(space, source, as_json):
+    """Import the Notion session of the signed-in browser and choose the workspace.
+
+    Sign in at https://www.notion.so in Chrome (or Arc, Brave, Edge) first. Run
+    it again with --space to switch workspace, or after Notion signs you out.
+    macOS may ask once to let `security` use "Chrome Safe Storage": click Always Allow.
+    """
+    done = connect_from_browser(space or env_value("NOTION_SPACE"), source)
+    done.pop("config")
+    if as_json:
+        click.echo(json.dumps(done, ensure_ascii=False))
+        return
+    others = f" Other workspaces: {', '.join(done['other_spaces'])}." if done["other_spaces"] else ""
+    click.echo(f"Connected to {done['space']!r} as {done['email'] or done['user']} (from {done['browser']}).{others}")
+
+
+@cli.command(epilog="\b\nExamples:\n  notion spaces\n  notion spaces --json")
+@click.option("--json", "as_json", is_flag=True)
+def spaces(as_json):
+    """List the workspaces this session can use; `connect --space NAME` switches."""
+    api = api_or_die()
+    token = api.s.headers["Cookie"].removeprefix("token_v2=")
+    rows = [{**{k: s[k] for k in ("space_name", "space_id", "email")}, "bound": s["space_id"] == api.space_id}
+            for s in list_spaces(token)]
+    if as_json:
+        click.echo(json.dumps(rows, ensure_ascii=False))
+        return
+    for r in rows:
+        click.echo(f"{'*' if r['bound'] else ' '} {r['space_name']}\t{r['space_id']}\t{r['email']}")
+
+
 @cli.command(epilog="\b\nExamples:\n  notion login\n  notion login --source arc --space \"My Workspace\"")
-@click.option("--source", type=click.Choice(["auto", "notion", "chrome", "arc", "brave"]), default="auto", show_default=True)
+@click.option("--source", type=click.Choice(SOURCE_LABELS), default="auto", show_default=True)
 @click.option("--space", default=None, help="workspace name to bind (when the account has several)")
 def login(source, space):
-    """Extract token_v2 from the Notion app / a Chromium browser and bind it.
+    """Extract token_v2 from a Chromium browser / the Notion app and bind it.
 
     Decrypts the local cookie stores with the apps' macOS-keychain keys — no
     password typed, no browser automation; requires being logged in to
-    notion.so or app.notion.com in one of them. Stale sessions (a logged-out desktop app) are
-    skipped: the first token that VALIDATES against the API wins. May pop one
-    keychain 'Allow' dialog per app.
+    notion.so or app.notion.com in one of them. Stale sessions are skipped:
+    the first token that VALIDATES against the API wins. Asks which workspace
+    when several match; `connect` never asks.
     """
-    tried: list[str] = []
     for token, label in iter_tokens(source):
-        r = requests.post(f"{API_BASE}/getSpaces", json={}, headers={"Cookie": f"token_v2={token}"}, timeout=30)
-        if r.ok:
-            click.echo(f"token_v2 extracted from {label} (valid)")
-            _bind_and_save(token, space)
-            return
-        tried.append(f"{label}:{r.status_code}")
-        log.info("token from %s rejected (%s), trying next store", label, r.status_code)
-    raise click.ClickException(
-        ("all extracted tokens were stale (" + ", ".join(tried) + ")" if tried else "no decryptable token_v2 found in Notion/Chrome/Arc/Brave")
-        + " — log in to app.notion.com in one of those apps, or paste the cookie via `auth`."
-    )
+        try:
+            list_spaces(token)
+        except click.ClickException:
+            log.info("token from %s rejected, trying next store", label)
+            continue
+        click.echo(f"token_v2 extracted from {label} (valid)")
+        _bind_and_save(token, space)
+        return
+    raise click.ClickException("No signed-in Notion session found in Chrome, Arc, Brave, Edge or the Notion app. " + CONNECT_HELP)
 
 
-@cli.command(epilog="\b\nExamples:\n  notion whoami")
-def whoami():
-    """Show the bound user, workspace, and optional official API token."""
+@cli.command(epilog="\b\nExamples:\n  notion whoami\n  notion whoami --json")
+@click.option("--json", "as_json", is_flag=True)
+def whoami(as_json):
+    """Show the signed-in user and workspace (imports the browser session when none is saved)."""
+    api = api_or_die()
+    u = api.records("notion_user", [api.user_id]).get(api.user_id, {}) if api.user_id else {}
     cfg = load_config()
-    if cfg.get("token_v2") or os.environ.get("NOTION_TOKEN_V2"):
-        api = Api(cfg)
-        users = api.records("notion_user", [cfg.get("user_id")])
-        u = users.get(cfg.get("user_id"), {})
-        session = (
-            f"{u.get('name', cfg.get('user_id'))} <{u.get('email', '?')}> "
-            f"— space {cfg.get('space_name')} ({cfg.get('space_id')})"
-        )
-    else:
-        session = "session: missing (run `notion login` or `notion auth`)"
-    key = os.environ.get("NOTION_API_KEY") or cfg.get("api_key")
-    click.echo(f"{session} — api_key: {'set' if key else 'missing (optional; agents use session)'}")
+    info = {
+        "user": u.get("name"), "email": u.get("email"), "user_id": api.user_id,
+        "space": api.space_name, "space_id": api.space_id,
+        "api_key": bool(env_value("NOTION_API_KEY") or cfg.get("api_key")),
+    }
+    if as_json:
+        click.echo(json.dumps(info, ensure_ascii=False))
+        return
+    click.echo(
+        f"{info['user'] or info['user_id']} <{info['email'] or '?'}> — space {info['space']} ({info['space_id']})"
+        f" — api_key: {'set' if info['api_key'] else 'missing (optional; agents use session)'}"
+    )
 
 
 @cli.group("cache", epilog="\b\nExamples:\n  notion cache stats\n  notion cache clear 1234567890abcdef1234567890abcdef")
@@ -2429,9 +2600,8 @@ def comments(page_ref, resolved):
 def users(query_):
     """List workspace members (from the space permission list)."""
     api = api_or_die()
-    cfg = load_config()
-    spaces = api.records("space", [cfg["space_id"]])
-    perms = spaces.get(cfg["space_id"], {}).get("permissions", [])
+    spaces = api.records("space", [api.space_id])
+    perms = spaces.get(api.space_id, {}).get("permissions", [])
     uids = [p.get("user_id") for p in perms if p.get("user_id")]
     fetched = api.records("notion_user", uids)
     cache_names("users", {uid: u.get("name", "") for uid, u in fetched.items()})
@@ -3190,26 +3360,27 @@ def _export_agents(dest: Path, refs: tuple[str, ...], query: str | None, all_typ
         }
         click.echo(f"exported {slug}\t{aid}")
     save_agent_state(dest, state)
+    click.echo(f"saved in {dest.resolve()}")
 
 
 @agents_cmd.command("export", epilog="\b\nExamples:\n  notion agents export agents/\n  notion agents export agents/ --id https://app.notion.com/agent/1234567890abcdef1234567890abcdef")
-@click.argument("dest", type=click.Path())
+@click.argument("dest", type=click.Path(), required=False)
 @click.option("--id", "refs", multiple=True, help="restrict to these agent ids/URLs (repeatable)")
 @click.option("--query", "q", default=None)
 @click.option("--all-types", is_flag=True)
 def agents_export(dest, refs, q, all_types):
-    """Write live agent settings to DEST as yaml + instruction markdown."""
-    _export_agents(Path(dest), refs, q, all_types)
+    """Write live agent settings to DEST (default ~/Downloads/Notion/agents) as yaml + instruction markdown."""
+    _export_agents(Path(dest).expanduser() if dest else AGENTS_DIR, refs, q, all_types)
 
 
 @agents_cmd.command("pull", epilog="\b\nExamples:\n  notion agents pull agents/\n  notion agents pull agents/ --query triage")
-@click.argument("dest", type=click.Path())
+@click.argument("dest", type=click.Path(), required=False)
 @click.option("--id", "refs", multiple=True)
 @click.option("--query", "q", default=None)
 @click.option("--all-types", is_flag=True)
 def agents_pull(dest, refs, q, all_types):
     """Refresh manifests from live (alias for export)."""
-    _export_agents(Path(dest), refs, q, all_types)
+    _export_agents(Path(dest).expanduser() if dest else AGENTS_DIR, refs, q, all_types)
 
 
 def _plan_from_dir(src: Path):

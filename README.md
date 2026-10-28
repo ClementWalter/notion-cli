@@ -78,9 +78,13 @@ ln -sfn /path/to/notion-cli/bin/notion ~/.local/bin/notion
 Credentials are stored chmod-600 in `~/.config/notion-cli/config.json`.
 
 ```bash
-# Auto-extract from the Notion desktop app / Chrome / Arc / Brave
+# Auto-extract from Chrome / Arc / Brave / Edge / the Notion desktop app
 # (decrypts the cookie store via the macOS Keychain; stale sessions are
-# skipped — the first token that validates against the API wins)
+# skipped — the first token that validates against the API wins).
+# `connect` never prompts; `login` asks which workspace when several match.
+notion connect
+notion connect --space "My Workspace"
+notion spaces
 notion login
 
 # Pick the store and workspace explicitly
@@ -97,7 +101,16 @@ notion auth --pat
 `login`/`auth` bind a (user, workspace) pair — required because a session that
 knows several accounts gets empty results without the right active-user
 header. `notion whoami` shows the current binding. Session tokens live ~1 year
-unless you log out; on `401 — token_v2 expired`, just `login` again.
+unless you log out; on "Notion session expired", just `connect` again. With
+no saved session, the first command imports the browser's; `$NOTION_SPACE`
+picks the workspace for one run.
+
+### Claude Desktop extension
+
+`mcpb.json` configures the extension built by `mcp-bridge pack notion-cli`:
+sign in at notion.so in Chrome, then ask Claude to connect (the `connect`
+tool). Settings: workspace name (`NOTION_SPACE`) and an optional pasted
+`token_v2` (`NOTION_TOKEN_V2`) for Safari users.
 `$NOTION_API_KEY` overrides a stored PAT.
 
 ## Usage

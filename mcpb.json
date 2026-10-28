@@ -1,0 +1,27 @@
+{
+  "display_name": "Notion",
+  "description": "Read, search and edit your Notion workspace from Claude, as yourself.",
+  "long_description": "Search your Notion workspace, read pages and databases (with filters and chosen columns), list comments including resolved ones, and create or edit pages, rows and comments.\n\nUnlike Notion's official connector, this extension acts as the account you are signed in with: it sees every page and database that account can see, with no integration to add page by page. Every change it makes appears in Notion under your name.\n\nSetup:\n1. In Google Chrome (or Arc, Brave or Edge) on this Mac, sign in at https://www.notion.so.\n2. In Claude, ask: \"connect my Notion\". The first time, macOS asks whether `security` may use the \"Chrome Safe Storage\" keychain item: type your Mac password and click Always Allow. This copies your Notion session from Chrome into the extension; nothing is sent anywhere but Notion.\n3. Ask away, for example: \"search my Notion for the onboarding checklist\".\n\nSeveral workspaces: Claude picks the first one and tells you the others. Ask \"connect my Notion workspace <name>\" to switch, or type the workspace name in this extension's settings.\n\nWhen Notion signs you out (Claude will say the session expired), sign in at notion.so in Chrome again and ask Claude to connect once more.\n\nCreating, editing or deleting anything in Notion always asks you first. Exported agent settings are saved in Downloads/Notion.",
+  "platforms": ["darwin"],
+  "env": {
+    "NOTION_SPACE": "${user_config.workspace}",
+    "NOTION_TOKEN_V2": "${user_config.token_v2}"
+  },
+  "user_config": {
+    "workspace": {
+      "type": "string",
+      "title": "Workspace (optional)",
+      "description": "Name of the Notion workspace to use when your account has several. Leave empty for the one chosen when connecting.",
+      "required": false,
+      "default": ""
+    },
+    "token_v2": {
+      "type": "string",
+      "title": "Notion session cookie (optional)",
+      "description": "Only if you do not use Chrome, Arc, Brave or Edge (for example Safari): the value of the token_v2 cookie on notion.so.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    }
+  }
+}

@@ -43,15 +43,23 @@ pinned dependencies on first run).
 
 ## Authentication
 
-Preferred — automatic extraction from a local logged-in app (decrypts the
-Notion-desktop/Chrome/Arc/Brave cookie store via the macOS keychain; stale
-sessions are skipped, the first token that validates wins; may pop one
-keychain "Allow" dialog per app):
+Preferred — automatic extraction from a local signed-in browser (decrypts the
+Chrome/Arc/Brave/Edge/Notion-desktop cookie store via the macOS keychain;
+stale sessions are skipped, the first token that validates wins; may pop one
+keychain "Allow" dialog per app). Any command imports it on first use when no
+session is saved, and an expired saved session is swapped once for the
+browser's:
 
 ```bash
-notion login                # try all known cookie stores
+notion connect              # never prompts; binds the bound/first workspace, lists the others
+notion connect --space "My Workspace" --json   # switch workspace
+notion spaces               # workspaces the session can use (* = bound)
+notion login                # same import, asks which workspace when several match
 notion login --source arc --space "My Workspace"
 ```
+
+`$NOTION_SPACE` (workspace name or id) picks the workspace for one run without
+rebinding; it is the "Workspace" setting of the Claude Desktop extension.
 
 Manual fallback — grab `token_v2` from a logged-in browser (devtools →
 Application → Cookies → `https://app.notion.com` (SSO sessions) or
@@ -68,8 +76,8 @@ Auth binds a (user, space) pair and stores it chmod-600 in
 **`x-notion-active-user-header` matters**: without the bound user id the API
 returns HTTP 200 with permission-filtered EMPTY results — looks like missing
 content, is actually missing auth context. `whoami` verifies the binding.
-Tokens survive ~1 year unless the user logs out; a `401 — token_v2 expired`
-means re-grab the cookie and re-run `auth`.
+Tokens survive ~1 year unless the user logs out; "Notion session expired"
+means sign in at notion.so in the browser again and run `connect`.
 
 Custom Agents (`/agent/{id}` URLs) use the same `token_v2` session as pages
 (`getCustomAgents` + `workflow` records). A PAT is optional and only needed
