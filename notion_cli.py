@@ -2754,6 +2754,196 @@ def append(page_ref, text, md_file, top):
     click.echo(f"appended {len(top)} block(s) to {page_url(pid)}")
 
 
+# v3 filter operators per property type, each checked against known row counts:
+# the server never rejects an unknown operator, it just returns no rows.
+_VIEW_OPERATORS: dict[str, dict[str, str]] = {
+    **{t: {"=": "enum_is", "!=": "enum_is_not"} for t in ("select", "status")},
+    **{
+        t: {"=": "string_is", "!=": "string_is_not", "~": "string_contains"}
+        for t in ("title", "text", "url", "email", "phone_number")
+    },
+    "number": {
+        "=": "number_equals",
+        "!=": "number_does_not_equal",
+        ">": "number_greater_than",
+        ">=": "number_greater_than_or_equal_to",
+        "<": "number_less_than",
+        "<=": "number_less_than_or_equal_to",
+    },
+}
+
+
+def view_property(sch: dict[str, tuple[str, str]], name: str) -> tuple[str, str]:
+    """(prop_id, type) of `name`, matched on trimmed names: property names can carry stray spaces."""
+    want = name.strip()
+    hits = [v for k, v in sch.items() if k.strip() == want]
+    if not hits:
+        raise click.ClickException(f"unknown property {want!r}; known: {', '.join(sorted(k.strip() for k in sch))}")
+    return hits[0]
+
+
+def view_filter(expr: str, coll: dict) -> dict:
+    """One `query2` filter clause from the `query --filter` DSL, evaluated by Notion."""
+    sch = schema_by_name(coll)
+    expr = expr.strip()
+    if expr.endswith(" is_empty") or expr.endswith(" is_not_empty"):
+        prop, _, oper = expr.rpartition(" ")
+        val = None
+    else:
+        m = _FILTER_RE.match(expr)
+        if not m:
+            raise click.ClickException(f"cannot parse filter {expr!r}; e.g. --filter 'Status=Done'")
+        prop, oper, val = m.group("prop"), m.group("op"), m.group("val").strip()
+    prop = prop.strip()
+    pid, ptype = view_property(sch, prop)
+    if val is None:
+        return {"property": pid, "filter": {"operator": oper}}
+    ops_for = _VIEW_OPERATORS.get(ptype)
+    if not ops_for or oper not in ops_for:
+        allowed = ", ".join(sorted(ops_for)) if ops_for else "only is_empty / is_not_empty"
+        raise click.ClickException(f"{prop!r} is a {ptype} property: {allowed}")
+    value: Any = val
+    if ptype == "number":
+        try:
+            num = float(val)
+        except ValueError:
+            raise click.ClickException(f"{prop!r} is a number property, got {val!r}") from None
+        # a string value is silently matched against nothing
+        value = int(num) if num.is_integer() else num
+    elif ptype in ("select", "status"):
+        options = [o.get("value") for o in coll["schema"][pid].get("options") or []]
+        if val not in options:
+            raise click.ClickException(f"{val!r} is not an option of {prop!r}; options: {', '.join(map(str, options))}")
+    return {"property": pid, "filter": {"operator": ops_for[oper], "value": {"type": "exact", "value": value}}}
+
+
+def view_sort(expr: str, coll: dict) -> dict:
+    """One `query2` sort clause from 'Prop' or 'Prop:desc'."""
+    prop, _, direction = expr.strip().partition(":")
+    pid, _ = view_property(schema_by_name(coll), prop)
+    if direction not in ("", "asc", "desc"):
+        raise click.ClickException(f"sort direction must be asc or desc, got {direction!r}")
+    return {"property": pid, "direction": "descending" if direction == "desc" else "ascending"}
+
+
+def linked_view_ops(
+    page_id: str,
+    coll: dict,
+    name: str,
+    filters: list[dict],
+    sorts: list[dict],
+    shown: list[str] | None,
+    space_id: str,
+    *,
+    after: str | None = None,
+    before: str | None = None,
+) -> tuple[list[dict], str]:
+    """Ops creating an inline linked table view of `coll` on `page_id`; returns (ops, block_id).
+
+    The view lands after `after`, before `before`, or at the end of the page.
+    `shown` lists visible property ids in order; the rest stay hidden."""
+    block_id, view_id = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+    pointer = {"id": coll["id"], "table": "collection", "spaceId": space_id}
+    order = shown if shown is not None else ["title", *[p for p in coll.get("schema", {}) if p != "title"]]
+    hidden = [p for p in coll.get("schema", {}) if p not in order]
+    view = {
+        "id": view_id,
+        "version": 1,
+        "type": "table",
+        "name": name,
+        "format": {
+            "table_properties": [{"property": p, "visible": True} for p in order]
+            + [{"property": p, "visible": False} for p in hidden],
+            "collection_pointer": pointer,
+        },
+        "query2": {"filter": {"operator": "and", "filters": filters}, "sort": sorts},
+        "parent_id": block_id,
+        "parent_table": "block",
+        "alive": True,
+        "space_id": space_id,
+    }
+    block = {
+        "id": block_id,
+        "version": 1,
+        "type": "collection_view",
+        "view_ids": [view_id],
+        "collection_id": coll["id"],
+        "format": {"collection_pointer": pointer},
+        "parent_id": page_id,
+        "parent_table": "block",
+        "alive": True,
+        "space_id": space_id,
+        "created_time": now_ms(),
+        "last_edited_time": now_ms(),
+    }
+    if after:
+        place = op("block", page_id, ["content"], "listAfter", {"id": block_id, "after": after}, space_id)
+    elif before:
+        place = op("block", page_id, ["content"], "listBefore", {"id": block_id, "before": before}, space_id)
+    else:
+        place = op("block", page_id, ["content"], "listAfter", {"id": block_id}, space_id)
+    return [
+        op("collection_view", view_id, [], "set", view, space_id),
+        op("block", block_id, [], "set", block, space_id),
+        place,
+        op("block", page_id, [], "update", {"last_edited_time": now_ms()}, space_id),
+    ], block_id
+
+
+@cli.command(epilog="\b\nExamples:\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --name 'Open items' --filter 'Status=Triage' --sort 'Priority' --show 'Title,Status,Priority'\n  notion view 1234567890abcdef1234567890abcdef --db collection://00000000-0000-0000-0000-000000001234 --name Pipeline --section 'Vaults in the pipeline'\n  notion view 1234567890abcdef1234567890abcdef --db 00000000000000000000000000001234 --filter 'Budget>=50000' --top --json")
+@click.argument("page_ref")
+@click.option("--db", "db_ref", required=True, help="database url, data-source id or collection://… to show")
+@click.option("--name", help="view name (default: the database name)")
+@click.option("--filter", "filters", multiple=True, help="'Status=Done', 'Budget>=50000', 'Title~vault', 'Due is_empty' (ANDed, evaluated by Notion)")
+@click.option("--sort", "sorts", multiple=True, help="'Prop' or 'Prop:desc'; repeat for tie-breakers")
+@click.option("--show", help="comma-separated properties to display, in order; the rest are hidden")
+@click.option("--section", help="place the view at the end of the section under this heading")
+@click.option("--top", is_flag=True, help="place the view above the page's first block")
+@click.option("--json", "as_json", is_flag=True)
+def view(page_ref, db_ref, name, filters, sorts, show, section, top, as_json):
+    """Add an inline linked table view of a database to a page (filtered, sorted)."""
+    if section and top:
+        raise click.UsageError("pass --section or --top, not both")
+    api = api_or_die()
+    pid = parse_id(page_ref)
+    coll, _ = resolve_collection(api, db_ref)
+    sch = schema_by_name(coll)
+    shown = None
+    if show:
+        shown = [view_property(sch, n)[0] for n in show.split(",") if n.strip()]
+    parent, after, before = pid, None, None
+    if section:
+        blks = api.load_page(pid).get("block", {})
+        hid, par, kids = find_section(list(blks.get(pid, {}).get("content") or []), blks, section)
+        if not hid:
+            preview = "\n".join(render_page_body(api, pid, 3).splitlines()[:40])
+            raise click.ClickException(f"no heading matching {section!r}\n---\n{preview}")
+        parent = pid if par == "page" else par
+        after = kids[-1] if kids else hid
+    elif top:
+        content = api.block(pid).get("content") or []
+        before = content[0] if content else None
+    view_name = name or seg_plain(coll.get("name")) or "Table"
+    ops, block_id = linked_view_ops(
+        parent,
+        coll,
+        view_name,
+        [view_filter(f, coll) for f in filters],
+        [view_sort(s, coll) for s in sorts],
+        shown,
+        api.space_id,
+        after=after,
+        before=before,
+    )
+    if parent != pid:
+        ops.append(op("block", pid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
+    api.transact(ops)
+    if as_json:
+        click.echo(json.dumps({"page": page_url(pid), "block_id": block_id, "name": view_name, "collection_id": coll["id"]}))
+    else:
+        click.echo(f"added view {view_name!r} of {seg_plain(coll.get('name')) or coll['id']} to {page_url(pid)}\t{block_id}")
+
+
 def _parse_prop_args(props: tuple[str, ...]) -> dict[str, str]:
     out = {}
     for p in props:

@@ -150,6 +150,7 @@ notion edit <page> "old text" "new text"   # in-place replace; prints a preview 
 notion edit <page> --section "1. What" --md what.md   # replace a heading's body
 notion rewrite <page> --md body.md         # replace the whole page body
 notion comment <page> "ping @user(<uuid>)"
+notion view <page> --db <db> --filter 'Status=Done' --section 'Shipped'   # inline linked view of a database
 notion check <block-id>                    # tick a to-do's checkbox (find id via `blocks <page>`)
 notion check <block-id> --uncheck          # clear it
 notion delete <page>                       # trash (recoverable). never hard-deletes

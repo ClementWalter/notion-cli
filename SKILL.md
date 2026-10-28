@@ -311,6 +311,15 @@ notion resolve-discussion <discussion_id> --reopen
 notion check <block_id>              # tick
 notion check <block_id> --uncheck    # clear
 
+# Inline linked view of a database on a page: rows stay in the source
+# database, the view only filters, sorts and picks columns. --filter takes the
+# `query` DSL but Notion evaluates it (select/status: = !=; text/title/url:
+# = != ~; number: = != > >= < <=; any type: is_empty / is_not_empty).
+# Lands at the end of the page, at the end of a heading's section, or on top.
+notion view <page> --db <db_or_ds> --name 'Morpho vaults' \
+  --filter 'Vault Infra=Morpho' --sort Priority \
+  --show 'Launch,Curator,Stage,Batch' --section 'Vaults in the pipeline'
+
 notion delete <page>                 # trash only — recoverable
 notion delete-block <block_id>
 ```
@@ -350,6 +359,9 @@ notion create --parent <db> --jsonl rows.jsonl
 notion comment <page> "answered" --discussion <discussion_id>
 notion resolve-discussion <discussion_id>
 
+# "Show this database's rows for X on that page" — a live view, never a copied table
+notion view <page> --db <db_or_ds> --filter 'Team=Vaults' --section 'Pipeline'
+
 # Big pull: write to a file, filter there
 notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sort | uniq -c
 ```
@@ -363,6 +375,15 @@ notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sor
 - **Filters/sorts run client-side** over flattened values: `=` exact, `~`
   case-insensitive contains, comparisons numeric when both sides parse as
   numbers (ISO dates compare correctly as strings). Multiple `--filter` AND.
+- `view` filters run server-side, and Notion accepts any operator name: an
+  unknown one returns no rows instead of an error. `view` therefore maps the DSL
+  to the operators measured against known row counts, sends number values as
+  numbers (a string value matches nothing), refuses a select/status value that
+  is not an option, and refuses filters on other property types (person,
+  relation, date, multi-select): set those in the app. It creates table views
+  only. Property names are matched with surrounding spaces ignored, since a
+  name like `" Batch"` is legal and invisible in the app. A `rewrite` or
+  `edit --section` keeps the view in place.
 - `query` needs a view on the database (any view); `schema` prints the
   collection + view ids it resolved.
 - **Never hard-delete.** Regular delete only (`notion delete` / `delete-block`
