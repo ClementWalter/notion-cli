@@ -1614,6 +1614,37 @@ def blocks_to_ops(api: Api, specs: list[dict], parent_id: str, parent_table: str
 # --------------------------------------------------------------------------
 
 
+def inline_databases(blocks: dict[str, dict], root_id: str) -> list[dict]:
+    """Database blocks in a page's body, in document order. Child pages and
+    the databases themselves are not descended into, matching `page`'s `§db`."""
+    found: list[dict] = []
+
+    def walk(bid: str) -> None:
+        for cid in blocks.get(bid, {}).get("content") or []:
+            child = blocks.get(cid)
+            if not child or not child.get("alive", True):
+                continue
+            if child.get("type") in ("collection_view", "collection_view_page"):
+                if child.get("collection_id"):
+                    found.append(child)
+            elif child.get("type") != "page":
+                walk(cid)
+
+    walk(root_id)
+    return found
+
+
+def no_collection_message(ref: str, dbs: list[dict], colls: dict[str, dict]) -> str:
+    """Error for a ref that is not a database, naming the page's databases."""
+    if not dbs:
+        return f"{ref} is a page with no database in its body: read it with `notion page {ref}`"
+    lines = [f"{ref} is a page holding {len(dbs)} databases; pass one of them:"]
+    for b in dbs:
+        name = seg_plain(colls.get(b["collection_id"], {}).get("name")) or "database"
+        lines.append(f"  §db [{name}]({page_url(b['id'])})")
+    return "\n".join(lines)
+
+
 def resolve_collection(api: Api, ref: str) -> tuple[dict, str | None]:
     """Resolve a ref (collection id / collection-view block id / db url) to
     (collection_record, a_view_id)."""
@@ -1627,7 +1658,15 @@ def resolve_collection(api: Api, ref: str) -> tuple[dict, str | None]:
     blk = api.block(rid)
     cid = blk.get("collection_id") or (blk.get("format", {}).get("collection_pointer") or {}).get("id")
     if not cid:
-        raise click.ClickException(f"{ref} is neither a collection nor a collection-view block")
+        # A hub page (or a database row) is often passed for the database
+        # embedded in its body: resolve to it when it is unambiguous.
+        tables = api.load_page(rid)
+        dbs = inline_databases(tables.get("block", {}), rid)
+        if len(dbs) != 1:
+            raise click.ClickException(no_collection_message(ref, dbs, tables.get("collection", {})))
+        blk = dbs[0]
+        cid = blk["collection_id"]
+        click.echo(f"{ref} is a page; using its inline database {page_url(blk['id'])}", err=True)
     coll = api.records("collection", [cid])[cid]
     views = blk.get("view_ids") or []
     return coll, (views[0] if views else None)

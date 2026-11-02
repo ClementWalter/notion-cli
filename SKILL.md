@@ -112,6 +112,8 @@ notion pages <id1> <id2> <id3> ...   # multiple pages' bodies in ONE call — ba
                                              # otherwise be one `page` call per id (content only, no props)
 
 # Database / data source query — accepts db url, data-source id, collection://…
+# A page url resolves to the one database in its body (stderr names it); a page
+# with several lists their `§db` urls in the error, one with none says so.
 notion query <db_or_ds> --select ID,Title,Status
 notion query <db_or_ds> --filter 'Status=Done' --filter 'ID>195'
 notion query <db_or_ds> --filter 'Title~vault' --sort 'ID:desc' --limit 20
