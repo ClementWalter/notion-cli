@@ -628,6 +628,16 @@ def prop_op(rid: str, values: dict, space_id: str) -> dict:
     return op("block", rid, ["properties"], "updateBlockPropertyValue", {"primitiveOp": {"command": "update", "args": values}}, space_id)
 
 
+def segments_op(block: dict, key: str, segs: list, space_id: str) -> dict:
+    """Write one text property of a block.
+
+    Table rows are CRDT records that reject a raw `set` on `properties.<id>`,
+    so their cells go through `prop_op`; other blocks take a plain `set`."""
+    if block.get("type") == "table_row":
+        return prop_op(block["id"], {key: segs}, space_id)
+    return op("block", block["id"], ["properties", key], "set", segs, space_id)
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -1283,7 +1293,8 @@ def table_replace_row_ops(api: Api, table: dict, blocks: dict, new_rows: list[li
         props = _cells_to_props(order, cells)
         if i < len(existing):
             rid = existing[i]
-            ops.append(op("block", rid, ["properties"], "set", props, api.space_id))
+            # Table rows reject a raw `set` on `properties` (CRDT records).
+            ops.append(prop_op(rid, props, api.space_id))
             ops.append(op("block", rid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
             last_id = rid
         else:
@@ -3252,7 +3263,7 @@ def edit(page_ref, old, new, replace_all, section, md_file, body):
                 new_segs = replace_in_segments(segs, old, new)
             new_segs, mention_ops = native_mentions(api, new_segs, bid)
             ops += mention_ops
-            ops.append(op("block", bid, ["properties", key], "set", new_segs, api.space_id))
+            ops.append(segments_op(blks[bid], key, new_segs, api.space_id))
             ops.append(op("block", bid, [], "update", {"last_edited_time": now_ms()}, api.space_id))
         api.transact(ops)
         invalidate_bodies([pid])

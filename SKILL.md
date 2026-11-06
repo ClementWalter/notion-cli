@@ -442,15 +442,13 @@ notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sor
   and can splice the GFM `page` renders for a table to insert/delete rows.
   `append` of a `| table |` creates a real Notion table; if the page already
   has exactly one table with the same column count, rows are merged into it.
-  A `table_row` that carries `crdt_format_version` rejects any cell write,
-  whether a single `properties.<col>` set or the whole `properties` dict, with
-  `400 … Block property value updates must use high-level property
-  operations`. Such a table's cells are edited through the Notion MCP
-  `notion-update-page` `update_content`, where `old_str` is a unique
-  `<td>…</td>` as `notion-fetch` renders it; the table block keeps its id.
-  `check` and `update --prop` write through `updateBlockPropertyValue`, the
-  op Notion's client uses, so they work on CRDT to-dos and CRDT database rows
-  (every Projects row carries `crdt_format_version`) and keep the block id.
+  A `table_row` carrying `crdt_format_version` rejects a raw `set` on its
+  `properties` (`400 … Block property value updates must use high-level
+  property operations`), so `edit` writes cells, and the rows a GFM splice
+  rewrites, through `updateBlockPropertyValue`, the op Notion's client uses;
+  the row keeps its id. `check` and `update --prop` use the same op, so they
+  work on CRDT to-dos and CRDT database rows (every Projects row carries
+  `crdt_format_version`).
 - `page --depth` default is 6; deeper nesting truncates with an explicit
   `[…children truncated]` marker rather than silently.
 - HTTP reads time out at 60s, so a large `rewrite`/`create --md` can raise
@@ -619,12 +617,8 @@ and `edit --section` (under a heading). Consequences:
   cell is `@page(id)`, not `[page](url)`) and pass the same snippet plus the new
   rows as `new`. Inserting before a trailing total row,
   backfilling mid-table and adding several rows in one call all work this way.
-  Changing a cell of a row that carries `crdt_format_version` fails with
-  `400 … Block property value updates must use high-level property
-  operations`, whatever the snippet, so don't retry `edit` on it. Edit the cell
-  with the Notion MCP `notion-update-page` `update_content`, with `old_str` set
-  to a unique `<td>…</td>` exactly as `notion-fetch` renders it (see the
-  Simple-table entry in Gotchas).
+  A cell can also be edited on its own with plain `edit "old" "new"`, which
+  rewrites only the matched segment and keeps inline code spans around it.
 - **Checkboxes** are not text: `edit` cannot reach them. Use
   `check <block_id> [--uncheck]` with an id from `blocks <page>` at default
   depth.
