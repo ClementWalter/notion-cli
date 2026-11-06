@@ -34,6 +34,7 @@ Output conventions:
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -2320,6 +2321,21 @@ def cache_clear(refs):
     click.echo(f"cleared {n_} entries")
 
 
+
+def lifecycle_flags(blk: dict) -> dict[str, Any]:
+    """Trash and archive state of a block record.
+
+    Both still resolve by id; an archived row is dropped from database queries
+    while staying alive, so a reader must tell it apart from a vanished one.
+    """
+    flags: dict[str, Any] = {}
+    if not blk.get("alive", True):
+        flags["deleted"] = True
+    if blk.get("archived_time"):
+        flags["archived"] = datetime.datetime.fromtimestamp(blk["archived_time"] / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return flags
+
+
 @cli.command(epilog="\b\nExamples:\n  notion page https://www.notion.so/1234567890abcdef1234567890abcdef\n  notion page 1234567890abcdef1234567890abcdef --props-only\n  notion page 1234567890abcdef1234567890abcdef --write --no-cache\n  notion page 1234567890abcdef1234567890abcdef --json")
 @click.argument("ref")
 @click.option("--props-only", is_flag=True, help="skip the body (cheapest read)")
@@ -2344,9 +2360,7 @@ def page(ref, props_only, no_props, depth, as_json, raw, writeable, no_cache):
     if raw:
         click.echo(json.dumps(blk, indent=2, ensure_ascii=False))
         return
-    flat: dict[str, Any] = {"id": pid, "url": page_url(pid)}
-    if not blk.get("alive", True):
-        flat["deleted"] = True  # record still resolves after deletion (trash)
+    flat: dict[str, Any] = {"id": pid, "url": page_url(pid), **lifecycle_flags(blk)}
     if blk.get("parent_table") == "collection":
         coll = api.records("collection", [blk["parent_id"]]).get(blk["parent_id"], {})
         sch = schema_by_name(coll)

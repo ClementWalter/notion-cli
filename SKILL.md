@@ -128,7 +128,7 @@ notion query <db_or_ds> --edited-after 2026-07-20 --with-body   # bodies ONLY fo
 # Applied client-side on flattened values (numeric-aware; ~ is case-insensitive).
 # Relation cells: text mode prints `#<ID> <Title>` when the target row is in the
 # same result set (else its url); --json keeps comma-separated notion.so urls.
-# A deleted row is simply absent (no tombstone) — confirm with `page <id> --props-only`.
+# A deleted or archived row is simply absent (no tombstone) — confirm with `page <id> --props-only`.
 
 notion schema <db_or_ds>       # property name → type (+ collection/view ids); types only, no option lists
 notion search "vault launch" --limit 10
@@ -267,6 +267,9 @@ notion append <page> --md notes.md
 # --top inserts above the page's first block instead: the way to put a TL;DR
 # on a hub page whose inline databases and child pages a `rewrite` would trash
 notion append <page> --top --md top.md
+# append <block_id> adds children at the END of that block (a callout, a
+# toggle). There is no insert-after: to put a new child before the last one,
+# append a copy of the last child, then `edit` the original into the new line.
 cat notes.md | notion append <page> --md -
 notion append <page> --md - <<'MD'
 | 2026-08-25 | 39,000 |  | [Slack](https://...) |
@@ -394,10 +397,11 @@ notion query <db_or_ds> --json > rows.json && jq -r '.[].Status' rows.json | sor
   / `alive=false`). That is the user Trash action — the page stays visible
   and restorable. The CLI refuses `deleteBlocks` and any
   `permanentlyDelete` / `permanently_deleted_time` payload.
-- Deleted pages still resolve (trash): `page` marks them `deleted: true`. A
-  deleted row is simply absent from `query` — no tombstone, no status — so
-  diff the ID column against a previous read and confirm each dropout with
-  `page <id> --props-only`.
+- Deleted pages still resolve (trash): `page` marks them `deleted: true`.
+  Archived rows stay alive but leave `query` too: `page` marks them
+  `archived: <UTC time>`. Either way the row is simply absent from `query` —
+  no tombstone, no status — so diff the ID column against a previous read and
+  confirm each dropout with `page <id> --props-only`.
 - `users [query]` lists the space's permission grants, not every member: an
   empty result is not absence. `Owner=user://<id>` needs a Notion user id (a
   Slack `U…` id fails with `400 incomplete_ancestor_path`, which reads like a
