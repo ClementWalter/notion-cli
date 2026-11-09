@@ -281,6 +281,8 @@ MD
 # mention cells (`@page(id)`) survive the rewrite, a plain `page` render does not match.
 # Mentions match as `page` renders them (`@Ada`). Prefer --section over guessing
 # the current paragraph; on no match, edit prints a short page preview.
+# A page id that resolves to nothing also reports `Error: no match` (exit 1),
+# with an empty preview: an empty preview means check the id with `page` first.
 # Anchor on plain text; `--` when old/new start with '-'. See "Editing bodies safely".
 # An `old` that spans an inline-code span or a mention reports no match, so text
 # that must follow a sentence ending in `code` or @user is added with --section.
